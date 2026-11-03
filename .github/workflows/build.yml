@@ -1,0 +1,65 @@
+# Build the excapp-db release binary natively on macOS, Linux, and Windows.
+# Each target uploads its binary as a build artifact.
+
+name: build
+
+on:
+  push:
+    branches: [prod]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 (native)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          # macOS Apple Silicon (native)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          # macOS Intel (native)
+          - os: macos-13
+            target: x86_64-apple-darwin
+          # Windows x86_64 (native)
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }} -p cli
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: excapp-db-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/excapp-db
+            target/${{ matrix.target }}/release/excapp-db.exe
+          if-no-files-found: error
