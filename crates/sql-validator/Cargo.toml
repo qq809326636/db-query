@@ -1,0 +1,12 @@
+[package]
+name = "sql-validator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "excapp_db_sql_validator"
+
+[dependencies]
+sqlparser = { version = "0.63", features = ["visitor"] }
+thiserror = "2"

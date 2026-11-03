@@ -1,0 +1,49 @@
+# =============================================================================
+# excapp-db deployment (Streamable HTTP mode)
+#
+# Before use:
+#   1. Generate the config: cp config.template.toml config.toml, then edit
+#      the database connections as needed;
+#   2. Change addr under [app.mcp.streamable] to "0.0.0.0" (otherwise it
+#      is reachable only inside the container), keep port at 8000;
+#      externally everything goes through the host's 16000 mapping;
+#   3. The container runs as the app user (uid 1000); the host's
+#      config.toml must be readable by it, e.g. chmod 644 config.toml.
+#
+# Common commands:
+#   docker compose up -d      # the image must be built by ./docker-build.sh
+#                             # and tagged 1.0.0 first
+#   docker compose logs -f    # follow logs
+#   docker compose down       # stop (graceful SIGTERM shutdown)
+#
+# Upgrading: update image below to the new version tag, then
+# docker compose up -d.
+# =============================================================================
+
+services:
+  excapp-db:
+    # The image is built by ./docker-build.sh and tagged <version>.
+    # A pinned version instead of latest: avoids accidental version drift
+    # after upgrades, and rolling back is just reverting to the old tag.
+    image: excapp-db:1.0.0
+
+    container_name: excapp-db
+    restart: unless-stopped
+
+    ports:
+      - "16000:8000" # host 16000 -> container 8000 (app.mcp.streamable.port in config.toml)
+
+    volumes:
+      - ./config.toml:/etc/excapp-db/config.toml:ro
+
+    # The service has no dedicated health endpoint (routing is /mcp only),
+    # so a bash /dev/tcp TCP probe is used instead; the probe port must
+    # match app.mcp.streamable.port in config.toml (default 8000).
+    # Note: bash must be invoked explicitly via the CMD form — CMD-SHELL
+    # runs through /bin/sh (dash), which does not support /dev/tcp.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

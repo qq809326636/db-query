@@ -1,0 +1,23 @@
+# Build context trimming: speeds up context upload and keeps local files
+# / sensitive information out of the image.
+# Note: config.template.toml is referenced by crates/cli/src/conf.rs via
+# include_str! and must stay in the context — never add it to this file.
+
+# Build artifacts (managed inside the image via BuildKit cache mounts)
+target/
+
+# Version control and CI
+.git/
+.gitignore
+.github/
+
+# Docs and editor configuration
+docs/
+*.md
+.cSpell.json
+.vscode/
+.idea/
+
+# Local config (contains database credentials and other secrets; must
+# never enter the image; the template file stays)
+config.toml

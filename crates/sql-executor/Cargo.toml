@@ -1,0 +1,15 @@
+[package]
+name = "sql-executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "excapp_db_sql_executor"
+
+[dependencies]
+excapp-db-core = { path = "../core", package = "core" }
+deadpool-postgres = "0.14"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }
+tokio-postgres = "0.7"

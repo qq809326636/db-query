@@ -1,0 +1,10 @@
+# For Project
+.github
+config.toml
+
+# Rust
+/target
+
+# For VSCode
+.vscode/
+db-query.code-workspace

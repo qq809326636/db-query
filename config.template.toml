@@ -1,0 +1,22 @@
+[app]
+log_level = "info"  # Log level, one of: "error", "warn", "info", "debug", "trace"
+
+[app.mcp.streamable]
+addr = "127.0.0.1"  # Streamable service listen address
+port = 8000  # Streamable service listen port
+
+[app.databases]
+watch_interval = 30  # Watch interval in seconds
+
+[[databases]]
+uid = "unique identifier; duplicates are rejected"
+name = "name, for users to recognize"
+description = "Brief description of the database scope, etc."
+type = "postgres"
+dialect = "postgres"
+username = "user"
+password = "password"
+host = "localhost"
+port = 5432
+db = "app"
+extra_opts = ""
