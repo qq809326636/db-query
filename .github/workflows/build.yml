@@ -1,11 +1,13 @@
 # Build the excapp-db release binary natively on Linux and macOS.
-# Each target uploads its binary as a build artifact.
+# Each target uploads its binary as a build artifact; pushing a version
+# tag (v*) additionally creates a GitHub release with packaged archives.
 
 name: build
 
 on:
   push:
     branches: [prod]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -58,3 +60,38 @@ jobs:
           name: excapp-db-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/excapp-db
           if-no-files-found: error
+
+  # Runs only for version tags (v*): collects the matrix artifacts and
+  # publishes them as a GitHub release. Requires the tag to point at a
+  # commit already promoted to prod.
+  release:
+    name: release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: excapp-db-*
+
+      - name: Package release archives
+        run: |
+          mkdir -p release
+          for dir in artifacts/excapp-db-*/; do
+            target="${dir#artifacts/excapp-db-}"
+            target="${target%/}"
+            # upload-artifact does not preserve the executable bit
+            chmod +x "${dir}excapp-db"
+            tar -czf "release/excapp-db-${GITHUB_REF_NAME}-${target}.tar.gz" -C "${dir}" excapp-db
+          done
+          ls -l release/
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release/*.tar.gz
