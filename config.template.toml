@@ -1,5 +1,23 @@
 [app]
-log_level = "info"  # Log level, one of: "error", "warn", "info", "debug", "trace"
+
+[app.data]
+dir = "./data"  # Directory for data files
+
+[app.log]
+format = "text"  # Log output format, one of: "text", "json"
+level = "info"  # Log level, one of: "error", "warn", "info", "debug", "trace"
+
+[app.log.console]
+enabled = false  # Whether to log to the console, default false
+format = ""  # Console log output format, one of: "text", "json"; empty by default, using the format from [app.log]
+
+[app.log.file]
+enabled = true  # Whether to enable file logging, default true
+format = "json"  # File log output format, one of: "text", "json", default json
+dir = ""  # Log file directory; if empty, <app.data.dir>/logs is used
+rolling = "daily"  # Log file rolling policy, one of: "daily", "hourly", "size"
+rolling_max_size = 10485760  # Maximum size per log segment in bytes, default 10MB. Effective only when rolling = "size"
+max_days = 7  # Maximum number of days log segments are kept
 
 [app.mcp.streamable]
 addr = "127.0.0.1"  # Streamable service listen address

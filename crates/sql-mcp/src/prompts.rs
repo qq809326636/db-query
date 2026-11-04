@@ -552,8 +552,7 @@ select columns explicitly on wide tables.",
 /// Build the prompt router (assembled by DbQueryServer::new; the
 /// macro-generated prompt_router function is module-private, forwarded
 /// here as pub(crate)).
-pub(crate) fn build_prompt_router() -> rmcp::handler::server::router::prompt::PromptRouter<
-    crate::tools::DbQueryServer,
-> {
+pub(crate) fn build_prompt_router()
+-> rmcp::handler::server::router::prompt::PromptRouter<crate::tools::DbQueryServer> {
     <crate::tools::DbQueryServer>::prompt_router()
 }

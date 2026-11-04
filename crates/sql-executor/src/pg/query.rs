@@ -1,7 +1,7 @@
 //! PgQuery: query execution (simple query protocol, text-rendered values,
 //! row-limit protection).
 
-use super::{RESULT_BYTE_LIMIT, ROW_LIMIT, PgError};
+use super::{PgError, RESULT_BYTE_LIMIT, ROW_LIMIT};
 use crate::{CellValue, QueryResult};
 
 /// PostgreSQL query executor: holds the connection pool and implements
@@ -97,15 +97,26 @@ impl PgExecutor {
 
     /// Execute via the simple query protocol and return raw messages
     /// (error mapping includes the SQLSTATE enhancement).
+    ///
+    /// Every execution atomically binds the session prefix before the
+    /// query (statement timeout; derived connections also include
+    /// search_path): the target may be a transaction-level pooler proxy
+    /// that strips startup parameters and resets session GUCs when
+    /// recycling backend connections, so the same-string prefix is the
+    /// only reliable form.
     async fn simple_query(
         &self,
         sql: &str,
     ) -> Result<Vec<tokio_postgres::SimpleQueryMessage>, PgError> {
         let client = self.pool.acquire().await?;
-        client.simple_query(sql).await.map_err(|e| PgError::Query {
-            db_name: self.pool.db_name.clone(),
-            detail: crate::pg::flatten_error(&e),
-        })
+        let prefixed = format!("{}{sql}", self.pool.session_prefix);
+        client
+            .simple_query(&prefixed)
+            .await
+            .map_err(|e| PgError::Query {
+                db_name: self.pool.db_name.clone(),
+                detail: crate::pg::flatten_error(&e),
+            })
     }
 
     /// Expose the shared pool handle (the health check reuses the same

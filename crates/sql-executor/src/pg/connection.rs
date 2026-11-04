@@ -1,7 +1,7 @@
 //! PgConnection: PostgreSQL connection pool (lazy connect, max 10,
 //! recovers from drops on next acquire).
 
-use super::{POOL_MAX_SIZE, STATEMENT_TIMEOUT, PgError};
+use super::{POOL_MAX_SIZE, PgError, STATEMENT_TIMEOUT};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use excapp_db_core::config::DatabaseConfig;
 use tokio_postgres::Config;
@@ -13,6 +13,16 @@ pub struct PgPool {
     pub(crate) db_name: String,
     /// The deadpool pool.
     pub(crate) inner: Pool,
+    /// Session prefix (the SET statement string atomically bound
+    /// before every query).
+    ///
+    /// The target may be a transaction-level pooler proxy (pgbouncer
+    /// style): it strips startup packet options and resets session-level
+    /// GUCs when recycling backend connections — so the timeout and
+    /// search_path cannot rely on startup parameters or a one-shot SET
+    /// after connect; they must be sent in the same string as the query
+    /// (simple query protocol executes sequentially, atomically bound).
+    pub(crate) session_prefix: String,
     /// Connection parameters (for for_database derivation).
     pub(crate) host: String,
     pub(crate) port: u16,
@@ -45,27 +55,7 @@ impl PgPool {
             .user(&config.username)
             .password(&config.password);
 
-        for pair in config.extra_opts.split_whitespace() {
-            let Some((key, value)) = pair.split_once('=') else {
-                return Err(PgError::InvalidExtraOpts {
-                    db_name: config.uid.clone(),
-                    raw: pair.to_string(),
-                });
-            };
-            // Whitelist parameter keys: accept only legal identifier
-            // forms of PG connection parameters, preventing arbitrary
-            // content from being concatenated into the connection string.
-            if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                return Err(PgError::InvalidExtraOpts {
-                    db_name: config.uid.clone(),
-                    raw: pair.to_string(),
-                });
-            }
-            pg_config.options(format!("{key}={value}"));
-        }
-        // Statement-level timeout: prevents long queries from exhausting
-        // the pool (cancelled server-side, SQLSTATE 57014).
-        pg_config.options(format!("-c statement_timeout={STATEMENT_TIMEOUT}"));
+        append_extra_opts(&mut pg_config, &config.extra_opts, &config.uid)?;
 
         let manager = Manager::from_config(
             pg_config,
@@ -81,6 +71,7 @@ impl PgPool {
 
         Ok(Self {
             db_name: config.uid.clone(),
+            session_prefix: timeout_prefix(),
             host: config.host.clone(),
             port: config.port,
             username: config.username.clone(),
@@ -139,17 +130,17 @@ impl PgPool {
             .dbname(database)
             .user(&self.username)
             .password(&self.password);
-        for pair in self.extra_opts.split_whitespace() {
-            if let Some((key, value)) = pair.split_once('=') {
-                pg_config.options(format!("{key}={value}"));
-            }
-        }
-        if let Some(schema) = schema {
-            pg_config.options(format!("-c search_path={schema}"));
-        }
-        // Statement-level timeout: same as the base pool (prevents long
-        // queries from exhausting the pool).
-        pg_config.options(format!("-c statement_timeout={STATEMENT_TIMEOUT}"));
+        append_extra_opts(&mut pg_config, &self.extra_opts, &self.db_name)?;
+
+        // Session prefix: the timeout is always set; when a schema is
+        // given, search_path is set as well (both already validated
+        // against character whitelists; multi-statement simple query is
+        // safe).
+        let session_prefix = match schema {
+            Some(schema) => format!("SET search_path TO {schema}; {}", timeout_prefix()),
+            None => timeout_prefix(),
+        };
+
         let manager = Manager::from_config(
             pg_config,
             tokio_postgres::NoTls,
@@ -163,6 +154,7 @@ impl PgPool {
             .expect("deadpool builder with valid config cannot fail");
         Ok(Self {
             db_name: format!("{}::{database}", self.db_name),
+            session_prefix,
             host: self.host.clone(),
             port: self.port,
             username: self.username.clone(),
@@ -180,6 +172,50 @@ impl PgPool {
             detail: crate::pg::flatten_error(&e),
         })
     }
+}
+
+/// Build the session prefix for the statement timeout (sent in the same
+/// string as the query, atomically bound).
+fn timeout_prefix() -> String {
+    format!("SET statement_timeout = '{STATEMENT_TIMEOUT}'; ")
+}
+
+/// Concatenate the `key=value` pairs from `extra_opts` into the startup
+/// options.
+///
+/// Each pair gets a `-c` prefix and the fragments are joined with spaces
+/// into a **single** [`Config::options`] call: `options()` is a setter
+/// (repeated calls overwrite each other), and PostgreSQL 18 accepts only
+/// `-c config=val` forms in startup parameters. Parameter keys are
+/// whitelisted against injection.
+fn append_extra_opts(
+    pg_config: &mut Config,
+    extra_opts: &str,
+    db_name: &str,
+) -> Result<(), PgError> {
+    let mut fragments: Vec<String> = Vec::new();
+    for pair in extra_opts.split_whitespace() {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(PgError::InvalidExtraOpts {
+                db_name: db_name.to_string(),
+                raw: pair.to_string(),
+            });
+        };
+        // Whitelist parameter keys: accept only legal identifier
+        // forms of PG connection parameters, preventing arbitrary
+        // content from being concatenated into the connection string.
+        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(PgError::InvalidExtraOpts {
+                db_name: db_name.to_string(),
+                raw: pair.to_string(),
+            });
+        }
+        fragments.push(format!("-c {key}={value}"));
+    }
+    if !fragments.is_empty() {
+        pg_config.options(fragments.join(" "));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -241,6 +277,28 @@ mod tests {
             return;
         }
         assert!(pool.acquire().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_connection_sets_statement_timeout_via_session() {
+        // BUG-04 regression: the timeout is bound atomically via the
+        // pre-query SET prefix (startup options are stripped by proxies,
+        // and a one-shot SET after connect is reset by them; the same-
+        // string prefix is the only reliable form), and must be visible
+        // as 30s inside the execution path.
+        let executor = crate::pg::PgExecutor::new(&crate::pg::test_config()).unwrap();
+        if !crate::pg::connection_available(&executor.shared_pool()).await {
+            eprintln!("skipping: test postgres not available");
+            return;
+        }
+        let result = executor
+            .execute_metadata("SHOW statement_timeout")
+            .await
+            .unwrap();
+        assert_eq!(
+            result.rows[0][0].text, "30s",
+            "statement_timeout must be bound to every execution path"
+        );
     }
 
     #[tokio::test]

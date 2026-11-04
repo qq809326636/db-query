@@ -264,7 +264,9 @@ fn judge_query(index: usize, query: &Query, cte_label: Option<&str>, root: &str)
             // judgment (including its own with and body, naturally
             // covering nested data-modifying CTEs), passing the CTE name
             // down.
-            if let Some(denial) = judge_query(index, &cte.query, Some(cte.alias.name.value.as_str()), root) {
+            if let Some(denial) =
+                judge_query(index, &cte.query, Some(cte.alias.name.value.as_str()), root)
+            {
                 return Some(denial);
             }
         }
@@ -389,10 +391,7 @@ mod tests {
         assert!(judge_sql("SELECT pg_sleep(2)").is_empty());
         assert!(judge_sql("SELECT avg(x), count(*) FROM t GROUP BY 1").is_empty());
         assert!(judge_sql("SELECT repeat('A', 10)").is_empty());
-        assert!(
-            judge_sql("SELECT * FROM pg_advisory_locks WHERE lockid = 1")
-                .is_empty()
-        );
+        assert!(judge_sql("SELECT * FROM pg_advisory_locks WHERE lockid = 1").is_empty());
     }
 
     #[test]
@@ -513,7 +512,11 @@ mod tests {
         ] {
             let denials = judge_sql(sql);
             assert_eq!(denials.len(), 1, "{sql}");
-            assert_eq!(denials[0].category, crate::RejectCategory::DataModifyingCte, "{sql}");
+            assert_eq!(
+                denials[0].category,
+                crate::RejectCategory::DataModifyingCte,
+                "{sql}"
+            );
             assert!(denials[0].message.contains("data-modifying CTE"), "{sql}");
         }
     }
@@ -525,7 +528,8 @@ mod tests {
         assert_eq!(denials.len(), 1);
         assert_eq!(denials[0].category, crate::RejectCategory::DataModifyingCte);
 
-        let recursive = "WITH RECURSIVE r AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM r";
+        let recursive =
+            "WITH RECURSIVE r AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM r";
         assert_eq!(
             judge_sql(recursive)[0].category,
             crate::RejectCategory::DataModifyingCte
@@ -541,12 +545,15 @@ mod tests {
     }
 
     #[test]
-    fn test_allows_readonly_cte_regressions() {        // Plain / multiple / nested read-only CTEs and mixed read-only
+    fn test_allows_readonly_cte_regressions() {
+        // Plain / multiple / nested read-only CTEs and mixed read-only
         // forms stay allowed (regression).
         assert!(judge_sql("WITH sel AS (SELECT 1) SELECT * FROM sel").is_empty());
         assert!(
-            judge_sql("WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a UNION ALL SELECT * FROM b")
-                .is_empty()
+            judge_sql(
+                "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a UNION ALL SELECT * FROM b"
+            )
+            .is_empty()
         );
         assert!(
             judge_sql("WITH c AS (WITH d AS (VALUES (1)) SELECT * FROM d) SELECT * FROM c")
@@ -556,9 +563,7 @@ mod tests {
             judge_sql("WITH RECURSIVE t(n) AS (VALUES (1) UNION ALL SELECT n+1 FROM t WHERE n < 5) SELECT sum(n) FROM t")
                 .is_empty()
         );
-        assert!(
-            judge_sql("SELECT * FROM (WITH x AS (VALUES (1)) SELECT * FROM x) sub").is_empty()
-        );
+        assert!(judge_sql("SELECT * FROM (WITH x AS (VALUES (1)) SELECT * FROM x) sub").is_empty());
     }
 
     #[test]

@@ -1,10 +1,13 @@
 //! Application config: load and validate `config.toml` following the
 //! structure of `config.template.toml`.
 //!
-//! Three sections: `[app]` (log level), `[app.databases]` (global watch
-//! parameters), and `[[databases]]` (multiple database connections).
+//! Structure: `[app]` (data directory `[app.data]`, logging `[app.log]`
+//! with three sub-parts, MCP `[app.mcp]`, global watch
+//! `[app.databases]`) and `[[databases]]` multiple database connections.
 //! Failed validation returns an English error naming the field path;
 //! error messages never contain any credential values.
+//! The legacy flat field `app.log_level` is deprecated: its presence is
+//! an error with a migration hint.
 
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -12,6 +15,16 @@ use std::path::Path;
 
 /// Legal values for the log level.
 const LOG_LEVELS: &[&str] = &["error", "warn", "info", "debug", "trace"];
+
+/// Legal values for the log output format.
+const LOG_FORMATS: &[&str] = &["text", "json"];
+
+/// Legal values for the file rolling policy.
+const ROLLING_KINDS: &[&str] = &["daily", "hourly", "size"];
+
+/// Lower bound for `rolling_max_size` (bytes); effective only when
+/// `rolling = "size"`.
+const ROLLING_MAX_SIZE_MIN: u64 = 1048576;
 
 /// Legal range for `watch_interval` (seconds).
 const WATCH_INTERVAL_MIN: u64 = 1;
@@ -55,13 +68,22 @@ pub struct AppConfig {
     pub databases: Vec<DatabaseConfig>,
 }
 
-/// The `[app]` section config; `[app.databases]` is its sub-table, mapped
-/// via [`AppDatabasesSection`].
-#[derive(Debug, Deserialize)]
+/// The `[app]` section config; sub-tables map via their own structs.
+/// Default is derivable: every field's default matches the type default
+/// (Option → None, sub-structs → their own hand-written Defaults).
+#[derive(Debug, Default, Deserialize)]
 pub struct AppConfigSection {
-    /// Log level, defaults to `info`.
-    #[serde(default = "default_log_level")]
-    pub log_level: String,
+    /// Legacy flat field (deprecated): captured only for presence; if
+    /// present, semantic validation errors with a migration hint to
+    /// `app.log.level`; it participates in no behavior.
+    #[serde(default)]
+    pub log_level: Option<String>,
+    /// The `[app.data]` sub-table (data root directory); may be omitted.
+    #[serde(default)]
+    pub data: AppDataSection,
+    /// The `[app.log]` sub-table (logging config); may be omitted.
+    #[serde(default)]
+    pub log: LogSection,
     /// The `[app.mcp]` sub-table (MCP service parameters); may be omitted.
     #[serde(default)]
     pub mcp: McpSection,
@@ -72,14 +94,83 @@ pub struct AppConfigSection {
 }
 
 // McpSection contains only one sub-struct whose field-level defaults are
-// derive-safe; StreamableSection stays hand-written (deriving would use
-// type defaults and bypass the field-level functions).
+// derive-safe; the other structs containing non-type-default values stay
+// hand-written (deriving would use type defaults and bypass the
+// field-level functions).
 #[derive(Debug, Default, Deserialize)]
 pub struct McpSection {
     /// The `[app.mcp.streamable]` sub-table (Streamable HTTP listen
     /// parameters); may be omitted.
     #[serde(default)]
     pub streamable: StreamableSection,
+}
+
+/// The `[app.data]` sub-table: data file root directory (reserved for
+/// multiple purposes).
+#[derive(Debug, Deserialize)]
+pub struct AppDataSection {
+    /// Data root directory; relative paths are based on the process
+    /// working directory, defaults to `./data`.
+    #[serde(default = "default_data_dir")]
+    pub dir: String,
+}
+
+/// The `[app.log]` sub-table: overall logging config (level and format).
+#[derive(Debug, Deserialize)]
+pub struct LogSection {
+    /// Log output format (the inheritance source for console), defaults
+    /// to `text`.
+    #[serde(default = "default_log_format")]
+    pub format: String,
+    /// Log level, defaults to `info`.
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    /// The `[app.log.console]` sub-table; may be omitted.
+    #[serde(default)]
+    pub console: LogConsoleSection,
+    /// The `[app.log.file]` sub-table; may be omitted.
+    #[serde(default)]
+    pub file: LogFileSection,
+}
+
+/// The `[app.log.console]` sub-table: the console output target.
+#[derive(Debug, Default, Deserialize)]
+pub struct LogConsoleSection {
+    /// Whether console output is enabled, default `false` (the type
+    /// default matches the field default, derive-safe).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Console output format: an empty string inherits
+    /// `app.log.format`, default empty string.
+    #[serde(default)]
+    pub format: String,
+}
+
+/// The `[app.log.file]` sub-table: the file output target (rolling and
+/// retention policy).
+#[derive(Debug, Deserialize)]
+pub struct LogFileSection {
+    /// Whether file output is enabled, default `true`.
+    #[serde(default = "default_file_enabled")]
+    pub enabled: bool,
+    /// File output format, default `json` (independent of console).
+    #[serde(default = "default_file_format")]
+    pub format: String,
+    /// Log directory: an empty string falls back to
+    /// `<app.data.dir>/logs` (the composition happens in logging init);
+    /// the config object keeps the raw value, default empty string.
+    #[serde(default)]
+    pub dir: String,
+    /// Rolling segment policy, default `daily`.
+    #[serde(default = "default_rolling")]
+    pub rolling: String,
+    /// Upper bound of a single segment's size in size mode (bytes),
+    /// default 10 MB; effective only when `rolling = "size"`.
+    #[serde(default = "default_rolling_max_size")]
+    pub rolling_max_size: u64,
+    /// Days log segments are kept, default 7, minimum 1 (0 is invalid).
+    #[serde(default = "default_max_days")]
+    pub max_days: u32,
 }
 
 /// The `[app.mcp.streamable]` sub-table: listen parameters for the
@@ -108,13 +199,37 @@ pub struct AppDatabasesSection {
 // Hand-written Default instead of derive: derived Default overwrites
 // field-level serde default functions with type defaults (empty string / 0),
 // making the default semantics of "whole section omitted" and "field
-// omitted" inconsistent.
-impl Default for AppConfigSection {
+// omitted" inconsistent (this trap has been verified on the existing
+// structs); derive is safe only when the field default matches the type
+// default (see AppConfigSection / LogConsoleSection).
+impl Default for AppDataSection {
     fn default() -> Self {
         Self {
-            log_level: default_log_level(),
-            mcp: McpSection::default(),
-            databases: AppDatabasesSection::default(),
+            dir: default_data_dir(),
+        }
+    }
+}
+
+impl Default for LogSection {
+    fn default() -> Self {
+        Self {
+            format: default_log_format(),
+            level: default_log_level(),
+            console: LogConsoleSection::default(),
+            file: LogFileSection::default(),
+        }
+    }
+}
+
+impl Default for LogFileSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_file_enabled(),
+            format: default_file_format(),
+            dir: String::new(),
+            rolling: default_rolling(),
+            rolling_max_size: default_rolling_max_size(),
+            max_days: default_max_days(),
         }
     }
 }
@@ -128,14 +243,6 @@ impl Default for StreamableSection {
     }
 }
 
-fn default_streamable_addr() -> String {
-    "127.0.0.1".to_string()
-}
-
-fn default_streamable_port() -> u16 {
-    8000
-}
-
 impl Default for AppDatabasesSection {
     fn default() -> Self {
         Self {
@@ -144,8 +251,44 @@ impl Default for AppDatabasesSection {
     }
 }
 
+fn default_data_dir() -> String {
+    "./data".to_string()
+}
+
+fn default_log_format() -> String {
+    "text".to_string()
+}
+
 fn default_log_level() -> String {
     "info".to_string()
+}
+
+fn default_file_enabled() -> bool {
+    true
+}
+
+fn default_file_format() -> String {
+    "json".to_string()
+}
+
+fn default_rolling() -> String {
+    "daily".to_string()
+}
+
+fn default_rolling_max_size() -> u64 {
+    10485760
+}
+
+fn default_max_days() -> u32 {
+    7
+}
+
+fn default_streamable_addr() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_streamable_port() -> u16 {
+    8000
 }
 
 fn default_watch_interval() -> u64 {
@@ -206,11 +349,78 @@ impl AppConfig {
         Self::parse(&text)
     }
 
+    /// Ensure the data root directory exists: create it recursively when
+    /// missing (including all parent directories); idempotent.
+    ///
+    /// Kept separate from load validation: an invalid config refuses to
+    /// load, while a directory creation failure is an environment error;
+    /// callers invoke this explicitly at the appropriate moment.
+    pub fn ensure_data_dir(&self) -> Result<(), String> {
+        std::fs::create_dir_all(&self.app.data.dir).map_err(|e| {
+            format!(
+                "failed to create data directory '{}': {e}",
+                self.app.data.dir
+            )
+        })
+    }
+
+    /// Semantic validation: first error returned.
+    ///
+    /// Order: the new sections (legacy field migration → app.log items)
+    /// precede the existing checks (streamable → watch_interval →
+    /// databases uniqueness). The baseline config (without `[app.log]`)
+    /// passes all new checks on defaults, and existing first-error
+    /// positions are unaffected.
     fn validate(&self) -> Result<(), String> {
-        if !LOG_LEVELS.contains(&self.app.log_level.as_str()) {
+        if self.app.log_level.is_some() {
+            return Err(
+                "app.log_level is no longer supported: migrate to app.log.level in [app.log]"
+                    .to_string(),
+            );
+        }
+        if !LOG_LEVELS.contains(&self.app.log.level.as_str()) {
             return Err(format!(
-                "invalid value '{}' for app.log_level: expected one of error, warn, info, debug, trace",
-                self.app.log_level
+                "invalid value '{}' for app.log.level: expected one of error, warn, info, debug, trace",
+                self.app.log.level
+            ));
+        }
+        if !LOG_FORMATS.contains(&self.app.log.format.as_str()) {
+            return Err(format!(
+                "invalid value '{}' for app.log.format: expected one of text, json",
+                self.app.log.format
+            ));
+        }
+        let console_format = &self.app.log.console.format;
+        if !console_format.is_empty() && !LOG_FORMATS.contains(&console_format.as_str()) {
+            return Err(format!(
+                "invalid value '{}' for app.log.console.format: expected one of text, json, or empty string",
+                console_format
+            ));
+        }
+        if !LOG_FORMATS.contains(&self.app.log.file.format.as_str()) {
+            return Err(format!(
+                "invalid value '{}' for app.log.file.format: expected one of text, json",
+                self.app.log.file.format
+            ));
+        }
+        if !ROLLING_KINDS.contains(&self.app.log.file.rolling.as_str()) {
+            return Err(format!(
+                "invalid value '{}' for app.log.file.rolling: expected one of daily, hourly, size",
+                self.app.log.file.rolling
+            ));
+        }
+        if self.app.log.file.rolling == "size"
+            && self.app.log.file.rolling_max_size < ROLLING_MAX_SIZE_MIN
+        {
+            return Err(format!(
+                "invalid value {} for app.log.file.rolling_max_size: expected at least {} bytes",
+                self.app.log.file.rolling_max_size, ROLLING_MAX_SIZE_MIN
+            ));
+        }
+        if self.app.log.file.max_days < 1 {
+            return Err(format!(
+                "invalid value {} for app.log.file.max_days: expected at least 1 day",
+                self.app.log.file.max_days
             ));
         }
         if !is_valid_addr(&self.app.mcp.streamable.addr) {
@@ -259,9 +469,31 @@ impl AppConfig {
 mod tests {
     use super::*;
 
+    /// A complete template consistent with the new config.template.toml
+    /// structure (the test baseline).
     const TEMPLATE: &str = r#"
-[app]
-log_level = "info"
+[app.data]
+dir = "./data"
+
+[app.log]
+format = "text"
+level = "info"
+
+[app.log.console]
+enabled = false
+format = ""
+
+[app.log.file]
+enabled = true
+format = "json"
+dir = ""
+rolling = "daily"
+rolling_max_size = 10485760
+max_days = 7
+
+[app.mcp.streamable]
+addr = "127.0.0.1"
+port = 8000
 
 [app.databases]
 watch_interval = 30
@@ -283,7 +515,19 @@ extra_opts = ""
     #[test]
     fn test_parse_full_template() {
         let config = AppConfig::parse(TEMPLATE).unwrap();
-        assert_eq!(config.app.log_level, "info");
+        assert_eq!(config.app.data.dir, "./data");
+        assert_eq!(config.app.log.format, "text");
+        assert_eq!(config.app.log.level, "info");
+        assert!(!config.app.log.console.enabled);
+        assert_eq!(config.app.log.console.format, "");
+        assert!(config.app.log.file.enabled);
+        assert_eq!(config.app.log.file.format, "json");
+        assert_eq!(config.app.log.file.dir, "");
+        assert_eq!(config.app.log.file.rolling, "daily");
+        assert_eq!(config.app.log.file.rolling_max_size, 10485760);
+        assert_eq!(config.app.log.file.max_days, 7);
+        assert_eq!(config.app.mcp.streamable.addr, "127.0.0.1");
+        assert_eq!(config.app.mcp.streamable.port, 8000);
         assert_eq!(config.app.databases.watch_interval, 30);
         assert_eq!(config.databases.len(), 1);
         assert_eq!(config.databases[0].uid, "primary");
@@ -292,7 +536,8 @@ extra_opts = ""
     }
 
     #[test]
-    fn test_app_section_optional_defaults() {
+    fn test_app_section_omitted_full_defaults() {
+        // Whole section omitted: all new fields fall back to defaults.
         let text = r#"
 [[databases]]
 uid = "primary"
@@ -307,15 +552,29 @@ port = 5432
 db = "app"
 "#;
         let config = AppConfig::parse(text).unwrap();
-        assert_eq!(config.app.log_level, "info");
+        assert_eq!(config.app.log_level, None);
+        assert_eq!(config.app.data.dir, "./data");
+        assert_eq!(config.app.log.format, "text");
+        assert_eq!(config.app.log.level, "info");
+        assert!(!config.app.log.console.enabled);
+        assert_eq!(config.app.log.console.format, "");
+        assert!(config.app.log.file.enabled);
+        assert_eq!(config.app.log.file.format, "json");
+        assert_eq!(config.app.log.file.dir, "");
+        assert_eq!(config.app.log.file.rolling, "daily");
+        assert_eq!(config.app.log.file.rolling_max_size, 10485760);
+        assert_eq!(config.app.log.file.max_days, 7);
         assert_eq!(config.app.databases.watch_interval, 30);
     }
 
     #[test]
-    fn test_app_databases_subsection_optional() {
+    fn test_log_subsections_independently_omittable() {
+        // Only the [app.log] main fields are written; the console /
+        // file sub-sections are omitted entirely and take defaults.
         let text = r#"
-[app]
-log_level = "debug"
+[app.log]
+level = "debug"
+format = "json"
 
 [[databases]]
 uid = "primary"
@@ -330,16 +589,170 @@ port = 5432
 db = "app"
 "#;
         let config = AppConfig::parse(text).unwrap();
-        assert_eq!(config.app.log_level, "debug");
+        assert_eq!(config.app.log.level, "debug");
+        assert_eq!(config.app.log.format, "json");
+        assert!(!config.app.log.console.enabled);
+        assert!(config.app.log.file.enabled);
+        assert_eq!(config.app.log.file.format, "json");
         assert_eq!(config.app.databases.watch_interval, 30);
+    }
+
+    #[test]
+    fn test_log_field_level_defaults() {
+        // Field-level omission: only level and console.enabled are
+        // written; the remaining fields fall back to defaults.
+        let text = r#"
+[app.log]
+level = "warn"
+
+[app.log.console]
+enabled = true
+
+[[databases]]
+uid = "primary"
+name = "primary"
+description = "d"
+type = "postgres"
+dialect = "postgres"
+username = "user"
+password = "password"
+host = "localhost"
+port = 5432
+db = "app"
+"#;
+        let config = AppConfig::parse(text).unwrap();
+        assert_eq!(config.app.log.level, "warn");
+        assert_eq!(config.app.log.format, "text");
+        assert!(config.app.log.console.enabled);
+        // console.format not written → empty string (inheritance
+        // semantics).
+        assert_eq!(config.app.log.console.format, "");
+        assert!(config.app.log.file.enabled);
+        assert_eq!(config.app.log.file.format, "json");
+    }
+
+    #[test]
+    fn test_rejects_legacy_log_level_with_migration_hint() {
+        let text = r#"
+[app]
+log_level = "info"
+
+[[databases]]
+uid = "primary"
+name = "primary"
+description = "d"
+type = "postgres"
+dialect = "postgres"
+username = "user"
+password = "password"
+host = "localhost"
+port = 5432
+db = "app"
+"#;
+        let err = AppConfig::parse(text).unwrap_err();
+        assert!(
+            err.contains("app.log_level is no longer supported"),
+            "unexpected: {err}"
+        );
+        assert!(
+            err.contains("migrate to app.log.level in [app.log]"),
+            "unexpected: {err}"
+        );
     }
 
     #[test]
     fn test_rejects_invalid_log_level() {
-        let text = TEMPLATE.replace(r#"log_level = "info""#, r#"log_level = "verbose""#);
+        let text = TEMPLATE.replace(r#"level = "info""#, r#"level = "verbose""#);
         let err = AppConfig::parse(&text).unwrap_err();
-        assert!(err.contains("app.log_level"), "unexpected: {err}");
+        assert!(err.contains("app.log.level"), "unexpected: {err}");
         assert!(err.contains("verbose"));
+    }
+
+    #[test]
+    fn test_rejects_invalid_log_formats() {
+        // app.log.format invalid.
+        let text = TEMPLATE.replace(r#"format = "text""#, r#"format = "xml""#);
+        let err = AppConfig::parse(&text).unwrap_err();
+        assert!(err.contains("app.log.format"), "unexpected: {err}");
+
+        // console.format invalid (non-empty and outside the enum).
+        let text = TEMPLATE.replace(
+            "enabled = false\nformat = \"\"",
+            "enabled = false\nformat = \"yaml\"",
+        );
+        let err = AppConfig::parse(&text).unwrap_err();
+        assert!(err.contains("app.log.console.format"), "unexpected: {err}");
+
+        // file.format invalid.
+        let text = TEMPLATE.replace(
+            "format = \"json\"\ndir = \"\"",
+            "format = \"plain\"\ndir = \"\"",
+        );
+        let err = AppConfig::parse(&text).unwrap_err();
+        assert!(err.contains("app.log.file.format"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn test_console_format_empty_string_accepted() {
+        // The empty string is a legal value for console.format
+        // (inherits app.log.format).
+        let config = AppConfig::parse(TEMPLATE).unwrap();
+        assert_eq!(config.app.log.console.format, "");
+    }
+
+    #[test]
+    fn test_rejects_invalid_rolling() {
+        let text = TEMPLATE.replace(r#"rolling = "daily""#, r#"rolling = "weekly""#);
+        let err = AppConfig::parse(&text).unwrap_err();
+        assert!(err.contains("app.log.file.rolling"), "unexpected: {err}");
+        assert!(err.contains("weekly"));
+    }
+
+    #[test]
+    fn test_rolling_max_size_only_enforced_in_size_mode() {
+        // In daily mode any non-negative rolling_max_size is accepted
+        // and ignored.
+        let text = TEMPLATE.replace(
+            "rolling = \"daily\"\nrolling_max_size = 10485760",
+            "rolling = \"daily\"\nrolling_max_size = 1",
+        );
+        assert!(AppConfig::parse(&text).is_ok());
+
+        // size mode: the lower-bound boundary 1048576 is accepted,
+        // 1048575 is rejected.
+        for (value, ok) in [("1048576", true), ("1048575", false)] {
+            let text = TEMPLATE.replace(
+                "rolling = \"daily\"\nrolling_max_size = 10485760",
+                &format!("rolling = \"size\"\nrolling_max_size = {value}"),
+            );
+            let result = AppConfig::parse(&text);
+            assert_eq!(result.is_ok(), ok, "value {value} expected ok={ok}");
+            if !ok {
+                let err = result.unwrap_err();
+                assert!(
+                    err.contains("app.log.file.rolling_max_size"),
+                    "value {value}: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_max_days_boundary() {
+        for (value, ok) in [("1", true), ("0", false)] {
+            let text = TEMPLATE.replace("max_days = 7", &format!("max_days = {value}"));
+            let result = AppConfig::parse(&text);
+            assert_eq!(result.is_ok(), ok, "value {value} expected ok={ok}");
+            if !ok {
+                let err = result.unwrap_err();
+                assert!(err.contains("app.log.file.max_days"), "{value}: {err}");
+            }
+        }
+        // Negative values are rejected at deserialization (u32 accepts
+        // no negatives), including the field path.
+        let text = TEMPLATE.replace("max_days = 7", "max_days = -1");
+        let err = AppConfig::parse(&text).unwrap_err();
+        assert!(err.contains("max_days"), "unexpected: {err}");
     }
 
     #[test]
@@ -353,8 +766,8 @@ db = "app"
                 "value {value}: {err}"
             );
         }
-        // Negative values are rejected at deserialization (u64 accepts no
-        // negatives), also including the field path.
+        // Negatives are rejected at deserialization (u64 accepts no
+        // negatives), likewise including the field path.
         let text = TEMPLATE.replace("watch_interval = 30", "watch_interval = -1");
         let err = AppConfig::parse(&text).unwrap_err();
         assert!(err.contains("watch_interval"), "unexpected: {err}");
@@ -362,11 +775,11 @@ db = "app"
 
     #[test]
     fn test_rejects_type_mismatch_with_field_path() {
-        let text = TEMPLATE.replace(r#"log_level = "info""#, "log_level = 3");
+        let text = TEMPLATE.replace(r#"level = "info""#, "level = 3");
         let err = AppConfig::parse(&text).unwrap_err();
         assert!(err.contains("failed to parse config"));
         assert!(
-            err.contains("app.log_level") || err.contains("log_level"),
+            err.contains("app.log.level") || err.contains("level"),
             "unexpected: {err}"
         );
     }
@@ -406,7 +819,7 @@ db = "app"
     fn test_rejects_empty_databases() {
         // Keep the app section (legal) and omit only [[databases]]:
         // deserialization reports a missing field.
-        let err = AppConfig::parse("[app]\nlog_level = \"info\"\n").unwrap_err();
+        let err = AppConfig::parse("[app.log]\nlevel = \"info\"\n").unwrap_err();
         assert!(
             err.contains("missing field") && err.contains("databases"),
             "unexpected: {err}"
@@ -415,7 +828,7 @@ db = "app"
 
     #[test]
     fn test_error_messages_contain_no_password_value() {
-        let text = TEMPLATE.replace(r#"log_level = "info""#, r#"log_level = "nope""#);
+        let text = TEMPLATE.replace(r#"level = "info""#, r#"level = "nope""#);
         let err = AppConfig::parse(&text).unwrap_err();
         assert!(!err.contains("password"));
     }
@@ -436,7 +849,8 @@ db = "app"
     fn test_repeated_parse_is_deterministic() {
         let first = AppConfig::parse(TEMPLATE).unwrap();
         let second = AppConfig::parse(TEMPLATE).unwrap();
-        assert_eq!(first.app.log_level, second.app.log_level);
+        assert_eq!(first.app.log.level, second.app.log.level);
+        assert_eq!(first.app.log.file.max_days, second.app.log.file.max_days);
         assert_eq!(
             first.app.databases.watch_interval,
             second.app.databases.watch_interval
@@ -447,8 +861,8 @@ db = "app"
     #[test]
     fn test_streamable_section_parsed() {
         let text = TEMPLATE.replace(
-            "[app]\nlog_level = \"info\"",
-            "[app]\nlog_level = \"info\"\n\n[app.mcp.streamable]\naddr = \"0.0.0.0\"\nport = 9000",
+            "[app.mcp.streamable]\naddr = \"127.0.0.1\"\nport = 8000",
+            "[app.mcp.streamable]\naddr = \"0.0.0.0\"\nport = 9000",
         );
         let config = AppConfig::parse(&text).unwrap();
         assert_eq!(config.app.mcp.streamable.addr, "0.0.0.0");
@@ -457,7 +871,11 @@ db = "app"
 
     #[test]
     fn test_streamable_defaults_when_section_missing() {
-        let config = AppConfig::parse(TEMPLATE).unwrap();
+        let text = TEMPLATE.replace(
+            "[app.mcp.streamable]\naddr = \"127.0.0.1\"\nport = 8000\n\n",
+            "",
+        );
+        let config = AppConfig::parse(&text).unwrap();
         assert_eq!(config.app.mcp.streamable.addr, "127.0.0.1");
         assert_eq!(config.app.mcp.streamable.port, 8000);
     }
@@ -465,8 +883,8 @@ db = "app"
     #[test]
     fn test_streamable_field_level_defaults() {
         let text = TEMPLATE.replace(
-            "[app]\nlog_level = \"info\"",
-            "[app]\nlog_level = \"info\"\n\n[app.mcp.streamable]\nport = 9001",
+            "[app.mcp.streamable]\naddr = \"127.0.0.1\"\nport = 8000",
+            "[app.mcp.streamable]\nport = 9001",
         );
         let config = AppConfig::parse(&text).unwrap();
         assert_eq!(config.app.mcp.streamable.addr, "127.0.0.1");
@@ -487,8 +905,8 @@ db = "app"
             ("bad-", false),
         ] {
             let text = TEMPLATE.replace(
-                "[app]\nlog_level = \"info\"",
-                &format!("[app]\nlog_level = \"info\"\n\n[app.mcp.streamable]\naddr = \"{value}\""),
+                "[app.mcp.streamable]\naddr = \"127.0.0.1\"",
+                &format!("[app.mcp.streamable]\naddr = \"{value}\""),
             );
             let result = AppConfig::parse(&text);
             assert_eq!(result.is_ok(), ok, "addr {value:?} expected ok={ok}");
@@ -503,8 +921,8 @@ db = "app"
     fn test_streamable_port_validation() {
         for (value, ok) in [("1", true), ("65535", true), ("0", false)] {
             let text = TEMPLATE.replace(
-                "[app]\nlog_level = \"info\"",
-                &format!("[app]\nlog_level = \"info\"\n\n[app.mcp.streamable]\nport = {value}"),
+                "[app.mcp.streamable]\naddr = \"127.0.0.1\"\nport = 8000",
+                &format!("[app.mcp.streamable]\naddr = \"127.0.0.1\"\nport = {value}"),
             );
             let result = AppConfig::parse(&text);
             assert_eq!(result.is_ok(), ok, "port {value} expected ok={ok}");
@@ -513,11 +931,11 @@ db = "app"
                 assert!(err.contains("app.mcp.streamable.port"), "{value}: {err}");
             }
         }
-        // 65536 and negatives are rejected at deserialization (out of u16
-        // range), including the field path.
+        // 65536 and negatives are rejected at deserialization (out of
+        // u16 range), including the field path.
         let text = TEMPLATE.replace(
-            "[app]\nlog_level = \"info\"",
-            "[app]\nlog_level = \"info\"\n\n[app.mcp.streamable]\nport = 65536",
+            "[app.mcp.streamable]\naddr = \"127.0.0.1\"\nport = 8000",
+            "[app.mcp.streamable]\naddr = \"127.0.0.1\"\nport = 65536",
         );
         let err = AppConfig::parse(&text).unwrap_err();
         assert!(err.contains("port"), "{err}");
@@ -526,8 +944,8 @@ db = "app"
     #[test]
     fn test_streamable_type_mismatch_rejected() {
         let text = TEMPLATE.replace(
-            "[app]\nlog_level = \"info\"",
-            "[app]\nlog_level = \"info\"\n\n[app.mcp.streamable]\naddr = 3",
+            "[app.mcp.streamable]\naddr = \"127.0.0.1\"",
+            "[app.mcp.streamable]\naddr = 3",
         );
         let err = AppConfig::parse(&text).unwrap_err();
         assert!(
@@ -538,14 +956,14 @@ db = "app"
 
     #[test]
     fn test_existing_sections_unchanged_with_streamable() {
-        // Regression: existing fields behave unchanged in configs
-        // containing the new section.
+        // Regression: existing fields behave unchanged in configs with
+        // the new structure.
         let text = TEMPLATE.replace(
-            "[app]\nlog_level = \"info\"",
-            "[app]\nlog_level = \"debug\"\n\n[app.mcp.streamable]\nport = 9002",
+            "[app.mcp.streamable]\naddr = \"127.0.0.1\"\nport = 8000",
+            "[app.mcp.streamable]\nport = 9002",
         );
         let config = AppConfig::parse(&text).unwrap();
-        assert_eq!(config.app.log_level, "debug");
+        assert_eq!(config.app.log.level, "info");
         assert_eq!(config.app.databases.watch_interval, 30);
         assert_eq!(config.databases.len(), 1);
     }
@@ -554,5 +972,57 @@ db = "app"
     fn test_load_missing_file_error_contains_path() {
         let err = AppConfig::load(Path::new("/nonexistent/config.toml")).unwrap_err();
         assert!(err.contains("/nonexistent/config.toml"));
+    }
+
+    #[test]
+    fn test_ensure_data_dir_creates_recursively_and_is_idempotent() {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "db-query-conf-data-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let text = TEMPLATE.replace(
+            r#"dir = "./data""#,
+            &format!("dir = {:?}", root.join("a/b/c")),
+        );
+        let config = AppConfig::parse(&text).unwrap();
+
+        // Recursive creation when missing.
+        config.ensure_data_dir().unwrap();
+        assert!(root.join("a/b/c").is_dir());
+
+        // Idempotent success when already present, leaving existing
+        // content untouched.
+        std::fs::write(root.join("a/b/c/keep.txt"), "x").unwrap();
+        config.ensure_data_dir().unwrap();
+        assert!(root.join("a/b/c/keep.txt").is_file());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_ensure_data_dir_failure_contains_path() {
+        // Parent path is a file: create_dir_all necessarily fails and
+        // the error contains the target path.
+        let mut parent = std::env::temp_dir();
+        parent.push(format!(
+            "db-query-conf-file-{}-{}.txt",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&parent, "x").unwrap();
+
+        let target = format!("{}/child", parent.to_str().unwrap());
+        let text = TEMPLATE.replace(r#"dir = "./data""#, &format!("dir = {target:?}"));
+        let config = AppConfig::parse(&text).unwrap();
+
+        let err = config.ensure_data_dir().unwrap_err();
+        assert!(err.starts_with("failed to create data directory"), "{err}");
+        assert!(err.contains("child"), "{err}");
+
+        let _ = std::fs::remove_file(&parent);
     }
 }

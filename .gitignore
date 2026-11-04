@@ -1,5 +1,6 @@
 # For Project
 config.toml
+data/
 
 # Rust
 /target
@@ -7,3 +8,10 @@ config.toml
 # For VSCode
 .vscode/
 db-query.code-workspace
+
+# Benchmark reports (local only)
+benchmark/*/reports/
+
+# Python bytecode
+__pycache__/
+*.pyc

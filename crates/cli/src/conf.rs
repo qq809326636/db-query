@@ -62,9 +62,20 @@ fn load(path: &std::path::Path) -> i32 {
     };
     println!("config: {}", path.display());
     println!(
-        "log_level: {}  watch_interval: {}s",
-        config.app.log_level, config.app.databases.watch_interval
+        "log: level={} console={} file={}",
+        config.app.log.level,
+        if config.app.log.console.enabled {
+            "on"
+        } else {
+            "off"
+        },
+        if config.app.log.file.enabled {
+            "on"
+        } else {
+            "off"
+        },
     );
+    println!("watch_interval: {}s", config.app.databases.watch_interval);
     println!(
         "streamable: {}:{}",
         config.app.mcp.streamable.addr, config.app.mcp.streamable.port
@@ -84,7 +95,20 @@ fn show(path: &std::path::Path) -> i32 {
         Ok(c) => c,
         Err(e) => return fail(&e),
     };
-    println!("log_level = {:?}", config.app.log_level);
+    println!("data.dir = {:?}", config.app.data.dir);
+    println!("log.level = {:?}", config.app.log.level);
+    println!("log.format = {:?}", config.app.log.format);
+    println!("log.console.enabled = {}", config.app.log.console.enabled);
+    println!("log.console.format = {:?}", config.app.log.console.format);
+    println!("log.file.enabled = {}", config.app.log.file.enabled);
+    println!("log.file.format = {:?}", config.app.log.file.format);
+    println!("log.file.dir = {:?}", config.app.log.file.dir);
+    println!("log.file.rolling = {:?}", config.app.log.file.rolling);
+    println!(
+        "log.file.rolling_max_size = {}",
+        config.app.log.file.rolling_max_size
+    );
+    println!("log.file.max_days = {}", config.app.log.file.max_days);
     println!("watch_interval = {}", config.app.databases.watch_interval);
     println!("streamable.addr = {:?}", config.app.mcp.streamable.addr);
     println!("streamable.port = {}", config.app.mcp.streamable.port);

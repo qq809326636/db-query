@@ -199,7 +199,7 @@ mod tests {
 
     fn write_config(path: &Path, log_level: &str) {
         let content = format!(
-            "[app]\nlog_level = \"{log_level}\"\n\n[[databases]]\n\
+            "[app.log]\nlevel = \"{log_level}\"\n\n[[databases]]\n\
              uid = \"a\"\nname = \"a\"\ndescription = \"d\"\ntype = \"postgres\"\n\
              dialect = \"postgres\"\nusername = \"u\"\npassword = \"p\"\n\
              host = \"localhost\"\nport = 5432\ndb = \"app\"\n"
@@ -268,7 +268,7 @@ mod tests {
                 levels_ref
                     .lock()
                     .unwrap()
-                    .push(config.app.log_level.clone());
+                    .push(config.app.log.level.clone());
             },
         );
 
@@ -307,8 +307,8 @@ mod tests {
         );
 
         std::thread::sleep(Duration::from_millis(1300));
-        // Write an invalid config (log_level outside the enum).
-        let bad = "[app]\nlog_level = \"loud\"\n\n[[databases]]\nuid = \"a\"\nname = \"a\"\ndescription = \"d\"\ntype = \"postgres\"\ndialect = \"postgres\"\nusername = \"u\"\npassword = \"p\"\nhost = \"localhost\"\nport = 5432\ndb = \"app\"\n";
+        // Write an invalid config (level outside the enum).
+        let bad = "[app.log]\nlevel = \"loud\"\n\n[[databases]]\nuid = \"a\"\nname = \"a\"\ndescription = \"d\"\ntype = \"postgres\"\ndialect = \"postgres\"\nusername = \"u\"\npassword = \"p\"\nhost = \"localhost\"\nport = 5432\ndb = \"app\"\n";
         std::fs::write(&path, bad).unwrap();
         std::thread::sleep(Duration::from_millis(1500));
         // The callback does not fire while the config is invalid.

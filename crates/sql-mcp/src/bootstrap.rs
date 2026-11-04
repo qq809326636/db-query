@@ -17,13 +17,17 @@ use std::sync::Arc;
 /// non-zero exit).
 async fn setup(
     config_path: &Path,
-    log_target: excapp_db_core::logger::LogTarget,
+    mode: excapp_db_core::logger::TransportMode,
 ) -> Result<(excapp_db_core::config::AppConfig, SharedState), String> {
     let config = excapp_db_core::config::AppConfig::load(config_path)?;
 
-    // Logging init: stdio mode logs to stderr (stdout is the protocol
-    // channel).
-    excapp_db_core::logger::init_with_target(&config, log_target)
+    // Data root directory: ensure it exists after loading (idempotent
+    // creation, fail fast on error).
+    config.ensure_data_dir()?;
+
+    // Logging init: stdio mode disables console output (stdout is the
+    // protocol channel).
+    excapp_db_core::logger::init(&config, mode)
         .map_err(|e| format!("logging initialization failed: {e}"))?;
 
     // Executor set: an unsupported db_type fails the whole set (fail
@@ -102,14 +106,14 @@ impl excapp_db_core::watch::HealthCheck for CombinedHealthCheck {
 
 /// stdio mode: MCP protocol over stdin/stdout, logs to stderr.
 pub async fn run_stdio(config_path: &Path) -> i32 {
-    let (_config, state) = match setup(config_path, excapp_db_core::logger::LogTarget::Stderr).await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("sql-mcp: {e}");
-            return 1;
-        }
-    };
+    let (_config, state) =
+        match setup(config_path, excapp_db_core::logger::TransportMode::Stdio).await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("sql-mcp: {e}");
+                return 1;
+            }
+        };
 
     let server = DbQueryServer::new(state);
     let _scheduler_guard = SchedulerStarter::start_for(config_path, &_config, &server.state);
@@ -130,14 +134,14 @@ pub async fn run_stdio(config_path: &Path) -> i32 {
 
 /// streamable mode: HTTP listener + graceful shutdown.
 pub async fn run_streamable(config_path: &Path) -> i32 {
-    let (config, state) = match setup(config_path, excapp_db_core::logger::LogTarget::Stdout).await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("sql-mcp: {e}");
-            return 1;
-        }
-    };
+    let (config, state) =
+        match setup(config_path, excapp_db_core::logger::TransportMode::Standard).await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("sql-mcp: {e}");
+                return 1;
+            }
+        };
     let addr = format!(
         "{}:{}",
         config.app.mcp.streamable.addr, config.app.mcp.streamable.port

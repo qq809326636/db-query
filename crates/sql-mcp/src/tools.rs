@@ -409,9 +409,7 @@ impl DbQueryServer {
             Self::quote_literal(&param.table)
         );
         let table_comment = match executor.execute_metadata(&table_comment_sql).await {
-            Ok(r) if !r.rows.is_empty() && !r.rows[0][0].is_null => {
-                Some(r.rows[0][0].text.clone())
-            }
+            Ok(r) if !r.rows.is_empty() && !r.rows[0][0].is_null => Some(r.rows[0][0].text.clone()),
             _ => None,
         };
 
@@ -521,12 +519,10 @@ impl ServerHandler for DbQueryServer {
         &self,
         request: rmcp::model::GetPromptRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<
-        Output = Result<rmcp::model::GetPromptResponse, rmcp::ErrorData>,
-    > + rmcp::service::MaybeSendFuture
+    ) -> impl std::future::Future<Output = Result<rmcp::model::GetPromptResponse, rmcp::ErrorData>>
+    + rmcp::service::MaybeSendFuture
     + '_ {
-        let prompt_context =
-            PromptContext::new(self, request.name, request.arguments, context);
+        let prompt_context = PromptContext::new(self, request.name, request.arguments, context);
         self.prompt_router.get_prompt(prompt_context)
     }
 
@@ -534,9 +530,8 @@ impl ServerHandler for DbQueryServer {
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<
-        Output = Result<rmcp::model::ListPromptsResult, rmcp::ErrorData>,
-    > + rmcp::service::MaybeSendFuture
+    ) -> impl std::future::Future<Output = Result<rmcp::model::ListPromptsResult, rmcp::ErrorData>>
+    + rmcp::service::MaybeSendFuture
     + '_ {
         let prompts = self.prompt_router.list_all();
         std::future::ready(Ok(rmcp::model::ListPromptsResult {
