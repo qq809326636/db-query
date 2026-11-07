@@ -8,8 +8,17 @@ license.workspace = true
 name = "excapp_db_sql_executor"
 
 [dependencies]
-excapp-db-core = { path = "../core", package = "core" }
+deadpool = "0.13"
 deadpool-postgres = "0.14"
+deadpool-sqlite = "0.14"
+excapp-db-core = { path = "../core", package = "core" }
+fallible-iterator = "0.3"
+futures-util = "0.3"
+mysql_async = "0.37"
+rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }
 tokio-postgres = "0.7"
+
+[dev-dependencies]
+anyhow = "1"

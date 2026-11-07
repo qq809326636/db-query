@@ -67,6 +67,7 @@ LABEL org.opencontainers.image.title="excapp-db" \
       org.opencontainers.image.description="Read-only database query MCP server" \
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.url="https://github.com/qq809326636/db-query"
 
 USER app
 

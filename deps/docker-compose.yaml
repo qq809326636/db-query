@@ -1,0 +1,51 @@
+# =============================================================================
+# Test-dependency databases (local development / acceptance environments)
+#
+# Purpose: the three backend dependencies for testing db-query's multi-database
+# chain (validation -> execution). Only ports are exposed; no data volumes are
+# mounted — rebuilding a container resets its data, which suits test scenarios
+# (do not use this in production).
+#
+# Common commands:
+#   docker compose -f deps/docker-compose.yaml up -d      # start everything
+#   docker compose -f deps/docker-compose.yaml up -d dbq-pg18   # PG only
+#   docker compose -f deps/docker-compose.yaml ps         # show status
+#   docker compose -f deps/docker-compose.yaml down       # stop and remove (data reset)
+#
+# Port convention: allocated by service type within the range (10000, 10100]:
+#   dbq-pg18    10001  (postgres 18)
+#   dbq-mysql8  10002  (mysql 8.0)
+#   dbq-redis8  10003  (redis 8)
+# =============================================================================
+
+services:
+  dbq-pg18:
+    image: postgres:18
+    container_name: dbq-pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: testdb
+    ports:
+      - "10001:5432" # host 10001 -> container 5432
+
+  dbq-mysql8:
+    image: mysql:8.0
+    container_name: dbq-mysql8
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_USER: test
+      MYSQL_PASSWORD: test
+      MYSQL_DATABASE: testdb
+    ports:
+      - "10002:3306" # host 10002 -> container 3306
+
+  dbq-redis8:
+    image: redis:8-trixie
+    container_name: dbq-redis8
+    restart: unless-stopped
+    # No credentials required for testing; add command: ["redis-server", "--requirepass", "test"] if a password is needed
+    ports:
+      - "10003:6379" # host 10003 -> container 6379

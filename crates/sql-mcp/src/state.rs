@@ -1,50 +1,48 @@
-//! Shared state of the executor set: uid addressing, atomic hot-reload
-//! replacement.
+//! Shared state of the executor set: uid addressing, atomic swap on hot reload.
 //!
-//! The read path (tool calls fetching executors by uid) is lock-free:
-//! arc-swap's `load` yields a snapshot reference; the write path (config
-//! hot reload) swaps the whole snapshot, and in-flight calls holding the
-//! old reference complete naturally. Connection metadata (uid / name /
-//! description) is maintained alongside the snapshot for list-conf's
-//! local reads.
+//! The read path (tool calls fetching executors by uid) is lock-free: arc-swap's
+//! `load` yields a snapshot reference; the write path (config hot reload)
+//! replaces the snapshot wholesale, and in-flight calls holding the old
+//! reference finish naturally. Connection metadata (uid / name / description) is
+//! maintained with the snapshot for list-conf's local reads.
 
-use excapp_db_sql_executor::pg::PgExecutor;
+use excapp_db_core::config::AppConfig;
+use excapp_db_sql_executor::DatabaseExecutor;
+use excapp_db_sql_validator::{Policy, PolicyBuilder, StatementKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Metadata for a single connection (list-conf output; no connection
-/// details).
+/// Metadata of a single connection (list-conf output; no connection details).
 #[derive(Debug, Clone)]
 pub struct ConnectionInfo {
     /// Unique config identifier.
     pub uid: String,
-    /// Human-friendly name.
+    /// Human-recognizable name.
     pub name: String,
-    /// Scope description.
+    /// Coverage description.
     pub description: String,
-    /// SQL dialect (for execute-sql validation; not exposed outward).
+    /// SQL dialect (for execute-sql validation; not exposed externally).
     pub dialect: String,
-    /// Configured default database name (for database parameter
-    /// consistency checks).
+    /// Configured default database name (for database-parameter consistency checks).
     pub db: String,
     /// Database type (output as type by list-conf).
     pub db_type: String,
 }
 
-/// Executor set snapshot (immutable, replaced wholesale).
+/// Executor-set snapshot (immutable, swapped wholesale).
 #[derive(Debug, Default)]
 pub struct ExecutorSet {
-    /// uid -> executor.
-    executors: HashMap<String, Arc<PgExecutor>>,
+    /// uid → executor.
+    executors: HashMap<String, Arc<DatabaseExecutor>>,
     /// Connection metadata (list-conf).
     connections: Vec<ConnectionInfo>,
 }
 
 impl ExecutorSet {
-    /// Build the full set from the config.
+    /// Build the whole set from config.
     ///
-    /// Any unsupported `db_type` fails the whole set (fail fast, error
-    /// includes the database name); unreachable connections do not error
+    /// An unsupported `db_type` on any database fails the whole set (fail fast,
+    /// error carrying the database name); unreachable connections do not error
     /// here (lazy connections, handled at runtime).
     pub fn build(config: &excapp_db_core::config::AppConfig) -> Result<Self, String> {
         let mut executors = HashMap::new();
@@ -67,8 +65,42 @@ impl ExecutorSet {
         })
     }
 
-    /// Fetch an executor by uid.
-    pub fn executor(&self, uid: &str) -> Option<Arc<PgExecutor>> {
+    /// Build the validation policy from config (kinds subsetting + function
+    /// blacklist appends).
+    ///
+    /// The config already passed core's startup validation; the value-domain /
+    /// shape checks in this conversion are a second line of defense (failures
+    /// likewise fail fast, exiting at startup).
+    pub fn build_policy(config: &AppConfig) -> Result<Policy, String> {
+        let sql = &config.validator.sql;
+        let mut builder = PolicyBuilder::default();
+        let kinds: Vec<StatementKind> = sql
+            .whitelist
+            .kinds
+            .iter()
+            .map(|k| StatementKind::parse_allow_name(k))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                "invalid validator.sql.whitelist.kinds entry (already validated by core)"
+                    .to_string()
+            })?;
+        builder
+            .allow_kinds(&kinds)
+            .map_err(|e| format!("validator.sql.whitelist.kinds: {e}"))?;
+        for (dialect, section) in [
+            ("postgres", &sql.pg),
+            ("mysql", &sql.mysql),
+            ("sqlite", &sql.sqlite),
+        ] {
+            builder
+                .extend_fn_blacklist(dialect, &section.blacklist.function)
+                .map_err(|e| format!("validator.sql.{dialect}.blacklist.function: {e}"))?;
+        }
+        Ok(builder.build())
+    }
+
+    /// Fetch the executor by uid.
+    pub fn executor(&self, uid: &str) -> Option<Arc<DatabaseExecutor>> {
         self.executors.get(uid).cloned()
     }
 
@@ -77,7 +109,7 @@ impl ExecutorSet {
         &self.connections
     }
 
-    /// Default database name of the connection's config.
+    /// The connection's configured default database name.
     pub fn database_of(&self, uid: &str) -> Option<String> {
         self.connections
             .iter()
@@ -85,7 +117,7 @@ impl ExecutorSet {
             .map(|c| c.db.clone())
     }
 
-    /// SQL dialect of the target database (for execute-sql validation).
+    /// The target database's SQL dialect (for execute-sql validation).
     pub fn dialect_of(&self, uid: &str) -> Option<String> {
         self.connections
             .iter()
@@ -94,22 +126,44 @@ impl ExecutorSet {
     }
 }
 
-/// Shared state: an atomically swappable executor set.
-#[derive(Debug, Default, Clone)]
+/// Shared state: the atomically swappable executor set and validation policy.
+#[derive(Default, Clone)]
 pub struct SharedState {
     set: std::sync::Arc<arc_swap::ArcSwap<ExecutorSet>>,
+    /// The validation policy (swapped wholesale on hot reload; the old policy is
+    /// kept on failure).
+    policy: std::sync::Arc<arc_swap::ArcSwap<Policy>>,
 }
 
 impl SharedState {
-    /// Create with an initial set.
+    /// Create with an initial set (built-in default policy).
     pub fn new(initial: ExecutorSet) -> Self {
         Self {
             set: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(initial)),
+            policy: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(Policy::default())),
         }
     }
 
-    /// Fetch an executor by uid (lock-free read).
-    pub fn executor(&self, uid: &str) -> Option<Arc<PgExecutor>> {
+    /// Create with an initial set and policy (for startup assembly).
+    pub fn with_policy(initial: ExecutorSet, policy: Policy) -> Self {
+        Self {
+            set: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(initial)),
+            policy: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(policy)),
+        }
+    }
+
+    /// Atomically replace the validation policy (config hot reload).
+    pub fn replace_policy(&self, policy: Policy) {
+        self.policy.store(std::sync::Arc::new(policy));
+    }
+
+    /// The current validation policy snapshot (lock-free read).
+    pub fn policy(&self) -> std::sync::Arc<Policy> {
+        self.policy.load_full()
+    }
+
+    /// Fetch the executor by uid (lock-free read).
+    pub fn executor(&self, uid: &str) -> Option<Arc<DatabaseExecutor>> {
         self.set.load().executor(uid)
     }
 
@@ -128,12 +182,12 @@ impl SharedState {
             .collect()
     }
 
-    /// Default database name of the connection's config.
+    /// The connection's configured default database name.
     pub fn database_of(&self, uid: &str) -> Option<String> {
         self.set.load().database_of(uid)
     }
 
-    /// SQL dialect of the target database (for execute-sql validation).
+    /// The target database's SQL dialect (for execute-sql validation).
     pub fn dialect_of(&self, uid: &str) -> Option<String> {
         self.set.load().dialect_of(uid)
     }
@@ -157,34 +211,34 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn test_build_fails_on_unsupported_db_type() {
+    #[tokio::test]
+    async fn test_build_fails_on_unsupported_db_type() {
+        // mysql / sqlite are supported; redis is still a fail-closed unsupported type.
         let text = "[[databases]]\nuid = \"u1\"\nname = \"One\"\ndescription = \"d\"\n\
-                    type = \"mysql\"\ndialect = \"mysql\"\nusername = \"t\"\npassword = \"t\"\n\
-                    host = \"localhost\"\nport = 3306\ndb = \"app\"\n";
+                    type = \"redis\"\ndialect = \"postgres\"\nusername = \"t\"\npassword = \"t\"\n\
+                    host = \"localhost\"\nport = 6379\ndb = \"app\"\n";
         let config = excapp_db_core::config::AppConfig::parse(text).unwrap();
         let err = ExecutorSet::build(&config).unwrap_err();
-        assert!(err.contains("mysql") && err.contains("One"), "{err}");
+        assert!(err.contains("redis") && err.contains("One"), "{err}");
     }
 
-    #[test]
-    fn test_build_lazy_on_unreachable_db() {
-        // An unreachable database does not block the build (lazy
-        // connections).
+    #[tokio::test]
+    async fn test_build_lazy_on_unreachable_db() {
+        // Unreachable databases do not block construction (lazy connections).
         let mut config = test_app_config();
         config.databases[0].port = 59999;
         assert!(ExecutorSet::build(&config).is_ok());
     }
 
-    #[test]
-    fn test_lookup_and_replace() {
+    #[tokio::test]
+    async fn test_lookup_and_replace() {
         let state = SharedState::new(ExecutorSet::build(&test_app_config()).unwrap());
         assert!(state.executor("u1").is_some());
         assert!(state.executor("nope").is_none());
         assert_eq!(state.uids(), vec!["u1".to_string()]);
         assert_eq!(state.connections()[0].name, "One");
 
-        // The new set takes effect after replacement.
+        // The new set takes effect after the swap.
         let mut config2 = test_app_config();
         config2.databases[0].uid = "u2".into();
         config2.databases[0].name = "Two".into();

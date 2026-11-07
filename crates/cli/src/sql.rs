@@ -1,10 +1,10 @@
-//! sql command group: validate (pure local validation) / exec (validate ->
+//! sql command group: validate (purely local validation) / exec (validate then
 //! execute).
 
 use clap::Args as ClapArgs;
 use excapp_db_core::config::AppConfig;
 
-/// `excapp-db sql` arguments.
+/// Arguments for `excapp-db sql`.
 #[derive(Debug, ClapArgs)]
 pub struct SqlArgs {
     #[command(subcommand)]
@@ -26,8 +26,7 @@ enum SqlCommand {
         #[arg(long, default_value = "config.toml")]
         config: std::path::PathBuf,
     },
-    /// Validate then execute SQL, printing a table (--json switches to
-    /// JSON).
+    /// Validate then execute SQL, printing a table (--json switches to JSON).
     Exec {
         /// uid of the target connection.
         #[arg(long)]
@@ -67,8 +66,7 @@ pub async fn run(args: SqlArgs) -> i32 {
     }
 }
 
-/// Read SQL: --sql takes precedence, otherwise stdin until EOF
-/// (trimmed non-empty).
+/// Read SQL: --sql takes precedence, otherwise stdin until EOF (trimmed non-empty).
 fn read_sql(sql: Option<String>) -> Option<String> {
     if let Some(text) = sql {
         return Some(text);
@@ -87,7 +85,7 @@ fn read_sql(sql: Option<String>) -> Option<String> {
     }
 }
 
-/// Locate the database config by uid.
+/// Locate the database config by uid; returns (dialect, db config).
 fn locate(
     config_path: &std::path::Path,
     uid: &str,
@@ -105,12 +103,62 @@ fn locate(
         })
 }
 
+/// Build the validation policy from config; on load or build failure fall back
+/// to the built-in policy (local validation commands must not be blocked by a
+/// broken policy section; the error goes to stderr as a warning).
+fn load_policy(config_path: &std::path::Path) -> excapp_db_sql_validator::Policy {
+    match AppConfig::load(config_path) {
+        Ok(config) => match build_policy_from(&config) {
+            Ok(policy) => policy,
+            Err(e) => {
+                eprintln!("warning: falling back to builtin validator policy: {e}");
+                excapp_db_sql_validator::Policy::default()
+            }
+        },
+        Err(e) => {
+            eprintln!("warning: falling back to builtin validator policy: {e}");
+            excapp_db_sql_validator::Policy::default()
+        }
+    }
+}
+
+/// Config → policy (same assembly semantics as sql-mcp; kinds subsetting +
+/// three-dialect appends).
+fn build_policy_from(
+    config: &excapp_db_core::config::AppConfig,
+) -> Result<excapp_db_sql_validator::Policy, String> {
+    use excapp_db_sql_validator::{PolicyBuilder, StatementKind};
+    let sql = &config.validator.sql;
+    let mut builder = PolicyBuilder::default();
+    let kinds: Vec<StatementKind> = sql
+        .whitelist
+        .kinds
+        .iter()
+        .map(|k| StatementKind::parse_allow_name(k))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "invalid validator.sql.whitelist.kinds entry".to_string())?;
+    builder
+        .allow_kinds(&kinds)
+        .map_err(|e| format!("validator.sql.whitelist.kinds: {e}"))?;
+    for (dialect, section) in [
+        ("postgres", &sql.pg),
+        ("mysql", &sql.mysql),
+        ("sqlite", &sql.sqlite),
+    ] {
+        builder
+            .extend_fn_blacklist(dialect, &section.blacklist.function)
+            .map_err(|e| format!("validator.sql.{dialect}.blacklist.function: {e}"))?;
+    }
+    Ok(builder.build())
+}
+
 fn validate(config_path: &std::path::Path, uid: &str, sql: &str) -> i32 {
     let db = match locate(config_path, uid) {
         Ok(db) => db,
         Err(e) => return fail(&e),
     };
-    let verdict = excapp_db_sql_validator::validate(&db.dialect, sql);
+    let policy = load_policy(config_path);
+    let verdict = excapp_db_sql_validator::validate_with_policy(&db.dialect, sql, &policy);
     if verdict.allowed {
         println!("OK: statement passes read-only validation");
         0
@@ -130,7 +178,8 @@ async fn exec(config_path: &std::path::Path, uid: &str, sql: &str, json: bool) -
         Ok(db) => db,
         Err(e) => return fail(&e),
     };
-    let verdict = excapp_db_sql_validator::validate(&db.dialect, sql);
+    let policy = load_policy(config_path);
+    let verdict = excapp_db_sql_validator::validate_with_policy(&db.dialect, sql, &policy);
     if !verdict.allowed {
         for denial in &verdict.denials {
             eprintln!(
@@ -158,8 +207,7 @@ async fn exec(config_path: &std::path::Path, uid: &str, sql: &str, json: bool) -
     0
 }
 
-/// JSON output: same shape as MCP execute-sql (directly serializes
-/// QueryResult).
+/// JSON output: same shape as MCP execute-sql (QueryResult serialized directly).
 fn render_json(result: &excapp_db_sql_executor::QueryResult) -> String {
     let columns: Vec<&str> = result.columns.iter().map(String::as_str).collect();
     let rows: Vec<Vec<serde_json::Value>> = result
@@ -174,8 +222,8 @@ fn render_json(result: &excapp_db_sql_executor::QueryResult) -> String {
     serde_json::json!({ "columns": columns, "rows": rows }).to_string()
 }
 
-/// Table rendering: two-space separated, adaptive column widths, cells
-/// over 60 chars truncated with an ellipsis, NULL uppercased.
+/// Table rendering: two-space separated, adaptive column widths, cells over 60
+/// chars truncated with an ellipsis, NULL uppercased.
 fn render_table(result: &excapp_db_sql_executor::QueryResult) {
     const MAX_CELL: usize = 60;
     let cell = |text: &str, is_null: bool| -> String {
@@ -252,10 +300,10 @@ mod tests {
 
     #[test]
     fn test_table_render_null_and_alignment() {
-        // Not panicking during rendering is the baseline; NULL markers and
-        // the empty-result hint are asserted.
+        // Rendering without panicking is the baseline; assert the NULL flag and
+        // the empty-result hint.
         let result = sample_result();
-        render_table(&result); // stdout output (visible in test runs)
+        render_table(&result); // stdout output (visible in test environments)
 
         let empty = QueryResult {
             columns: vec!["x".into()],
