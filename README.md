@@ -24,7 +24,7 @@ DB Query MCP is a database MCP (Model Context Protocol) server written in Rust t
 
 ## Features
 
-- 🔌 Multiple databases: PostgreSQL, MySQL, SQLite, and Redis, with PostgreSQL delivered first
+- 🔌 Multiple databases: PostgreSQL, MySQL, and SQLite (delivered), with Redis on the roadmap
 - ⚙️ Multi-instance configuration: configure multiple database connections via `config.toml` and switch query targets by name
 - 🛡️ Read-only safety: SQL passes syntax validation first; only SELECT-style statements are allowed, everything else is rejected
 - 🧩 Modular layering: syntax validation, database adapters, and the MCP server live in separate crates for easy extension
@@ -34,8 +34,8 @@ DB Query MCP is a database MCP (Model Context Protocol) server written in Rust t
 
 ### Prerequisites
 
-- Rust stable toolchain
-- A reachable target database (e.g. PostgreSQL)
+- Rust stable toolchain (edition 2024, a fairly recent stable)
+- A reachable target database (e.g. PostgreSQL, MySQL) or a SQLite database file
 
 ### Installation
 
@@ -51,6 +51,29 @@ cargo build
 cargo run -p cli -- mcp --transport streamable  # binary name: excapp-db
 ```
 
+### Docker Deployment
+
+```bash
+# Build the image (version defaults to 1.0.0, override with --version; produces
+# excapp-db:1.0.0, excapp-db:1.0.0-g<git-short-sha> (inside a git repo) and excapp-db:latest)
+./docker-build.sh
+
+# Prepare the config before deploying
+cp config.template.toml config.toml
+#   - Edit the database connections in config.toml;
+#   - Change addr under [app.mcp.streamable] to "0.0.0.0" (otherwise it is
+#     reachable only inside the container), keep port at 8000; externally
+#     everything goes through the host's 16000 mapping;
+#   - The host's config.toml must be readable by the in-container app user
+#     (uid 1000), e.g. chmod 644.
+
+docker compose up -d       # the image must be built and tagged by docker-build.sh first
+docker compose logs -f     # follow logs
+docker compose down        # stop (SIGTERM graceful shutdown)
+```
+
+Version upgrades: change the `image` in `docker-compose.yaml` to the new version tag and run `up -d` again.
+
 ## Usage
 
 The service runs as an MCP server: register it in any MCP-capable client, then query the configured databases. Only statements that pass syntax validation are executed:
@@ -63,24 +86,56 @@ SELECT count(*) FROM orders WHERE created_at >= current_date;
 -- UPDATE orders SET status = 'paid'
 ```
 
+### MCP Tools
+
+The service provides six tools, addressing query targets by `uid`; chaining them in order is recommended:
+
+| Tool | Purpose | Key inputs |
+|------|---------|------------|
+| `list-connection` | List configured connections (local read, no database access) | — |
+| `list-database` | List databases visible to a connection | `uid` |
+| `list-schema` | List schemas in a database (system schemas excluded) | `uid` + `database` |
+| `list-table` | List tables and views in a schema (with partition semantics) | `uid` + `database` + `schema` (optional) |
+| `describe-table` | Table structure, DDL and comments | `uid` + `database` + `schema` (optional) + `table` |
+| `execute-sql` | Validate and execute read-only SQL (row / byte / timeout triple protection) | `uid` + `database` + `schema` (optional) + `sql` |
+
+Typical flow: `list-connection` to find the uid → `list-database` to pick a database → `list-schema` to locate the schema → `list-table` to find tables → `describe-table` to inspect the structure → `execute-sql` to query data. There is also a guide prompt plus six tool-matching usage prompts (the `lang` parameter selects zh / en).
+
 ## Configuration
 
 Configure multiple databases via `config.toml`; the server selects the query target by `name`. See [config.template.toml](config.template.toml):
 
 ```toml
+# PostgreSQL / MySQL: network connection form (see config.template.toml for the extra_opts key whitelist)
 [[databases]]
 uid = "primary"          # unique connection identifier; duplicates are rejected
 name = "primary"         # name, for users to recognize
 description = "..."      # brief description of the database scope, etc.
-type = "postgres"        # database type
-dialect = "postgres"     # SQL dialect
+type = "postgres"        # database type (postgres / mysql / sqlite)
+dialect = "postgres"     # SQL dialect (postgres / mysql / sqlite)
 username = "user"
 password = "password"
 host = "localhost"
 port = 5432
 db = "app"
 extra_opts = ""          # extra connection options, optional
+
+# SQLite: file-based form (connection-layer read-only hard constraint mode=ro, never creates files)
+[[databases]]
+uid = "sqlite-file"
+name = "sqlite-file"
+description = "..."
+type = "sqlite"
+dialect = "sqlite"
+username = ""            # SQLite ignores username / password / host / port
+password = ""
+host = ""
+port = 0
+db = "/path/to/app.db"   # the db field carries the file path
+extra_opts = ""
 ```
+
+Beyond connection settings, the optional `[validator.sql]` policy section can tighten the allowed statement kinds (`whitelist.kinds`, tighten-only) and append to the function blacklist (`<dialect>.blacklist.function`, append-only); omitting it entirely means the built-in policy. See [config.template.toml](config.template.toml) for the full key reference.
 
 ## Tech Stack
 
@@ -103,6 +158,10 @@ A multi-crate workspace layered by responsibility:
 │   ├── sql-mcp/           # MCP server library (lib), six tools + stdio and Streamable HTTP transports
 │   ├── sql-validator/     # SQL syntax validation library, only read-only queries pass
 │   └── sql-executor/      # database connection and query execution library, read-only query execution per database
+├── deps/                  # test-dependency database orchestration (docker compose: PG18 / MySQL8 / Redis8)
+├── benchmark/             # non-functional benchmark suite (security scenario)
+├── docker-build.sh        # image build script (a convenience wrapper around the Dockerfile)
+├── docker-compose.yaml    # deployment orchestration (host 16000 -> container 8000)
 ├── .cSpell.json           # spell-check ignore configuration
 ├── .gitignore             # Git ignore rules
 ├── config.template.toml   # configuration file template
@@ -129,13 +188,23 @@ cargo build --release
 
 # Fast release build (low optimization, no LTO, for verifying release behavior during development)
 cargo build --profile release-fast
+
+# Integration test dependencies: start the three test containers (PG18 :10001 / MySQL8 :10002 / Redis8 :10003)
+docker compose -f deps/docker-compose.yaml up -d
+```
+
+Security baseline benchmarks (attack payload library / concurrent resource protection / credential-leak audit, see [benchmark/](benchmark/)):
+
+```bash
+cd benchmark/security/scripts
+python3 run.py                # all active cases (dual target databases)
 ```
 
 ## Roadmap
 
-- [ ] Support PostgreSQL with read-only queries and SQL syntax validation (first milestone)
-- [ ] Support MySQL queries
-- [ ] Support SQLite queries
+- [x] Support PostgreSQL with read-only queries and SQL syntax validation (first milestone)
+- [x] Support MySQL queries (v0.2.0)
+- [x] Support SQLite queries (v0.2.0)
 - [ ] Support Redis queries
 
 For more ideas, see [Issues](https://github.com/qq809326636/db-query/issues).

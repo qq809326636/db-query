@@ -4,7 +4,7 @@
 //! `load` yields a snapshot reference; the write path (config hot reload)
 //! replaces the snapshot wholesale, and in-flight calls holding the old
 //! reference finish naturally. Connection metadata (uid / name / description) is
-//! maintained with the snapshot for list-conf's local reads.
+//! maintained with the snapshot for list-connection's local reads.
 
 use excapp_db_core::config::AppConfig;
 use excapp_db_sql_executor::DatabaseExecutor;
@@ -12,7 +12,7 @@ use excapp_db_sql_validator::{Policy, PolicyBuilder, StatementKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Metadata of a single connection (list-conf output; no connection details).
+/// Metadata of a single connection (list-connection output; no connection details).
 #[derive(Debug, Clone)]
 pub struct ConnectionInfo {
     /// Unique config identifier.
@@ -25,7 +25,7 @@ pub struct ConnectionInfo {
     pub dialect: String,
     /// Configured default database name (for database-parameter consistency checks).
     pub db: String,
-    /// Database type (output as type by list-conf).
+    /// Database type (output as type by list-connection).
     pub db_type: String,
 }
 
@@ -34,7 +34,7 @@ pub struct ConnectionInfo {
 pub struct ExecutorSet {
     /// uid → executor.
     executors: HashMap<String, Arc<DatabaseExecutor>>,
-    /// Connection metadata (list-conf).
+    /// Connection metadata (list-connection).
     connections: Vec<ConnectionInfo>,
 }
 
@@ -104,7 +104,7 @@ impl ExecutorSet {
         self.executors.get(uid).cloned()
     }
 
-    /// Connection metadata (list-conf).
+    /// Connection metadata (list-connection).
     pub fn connections(&self) -> &[ConnectionInfo] {
         &self.connections
     }
