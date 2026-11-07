@@ -1,10 +1,9 @@
 //! MCP tool layer: six tools (uid addressing), shared by both transports.
 //!
-//! - list-conf: reads connection metadata locally (no database access)
-//! - list-database / list-schema / list-table / describe-table: fixed
-//!   metadata queries
-//! - execute-sql: mandatory sql-validator validation -> sql-executor
-//!   execution
+//! - list-conf: reads connection metadata locally (no database round trip)
+//! - list-database / list-schema / list-table / describe-table: fixed metadata
+//!   queries
+//! - execute-sql: mandatory sql-validator validation → sql-executor execution
 
 use crate::state::SharedState;
 use excapp_db_sql_executor::{CellValue, QueryResult};
@@ -21,15 +20,15 @@ use serde_json::json;
 /// MCP server: six tools + seven prompts + shared state.
 #[derive(Clone)]
 pub struct DbQueryServer {
-    /// Executor set (uid addressing, atomic hot-reload replacement).
+    /// Executor set (uid addressing, atomic swap on hot reload).
     pub state: SharedState,
     pub(crate) tool_router: ToolRouter<Self>,
-    /// Prompt router (guide + one prompt per tool; static content).
+    /// Prompt router (guide + six tool-matching prompts; static content).
     pub(crate) prompt_router: PromptRouter<Self>,
 }
 
 impl DbQueryServer {
-    /// Build the server with shared state.
+    /// Build the server on a shared state.
     pub fn new(state: SharedState) -> Self {
         Self {
             state,
@@ -38,17 +37,17 @@ impl DbQueryServer {
         }
     }
 
-    /// Unified JSON text output for tools.
+    /// Uniform JSON text for tool output.
     fn json_output(value: serde_json::Value) -> CallToolResult {
         CallToolResult::success(vec![rmcp::model::ContentBlock::text(value.to_string())])
     }
 
-    /// Unified JSON error for tools (isError).
+    /// Uniform JSON for tool errors (isError).
     fn error_output(value: serde_json::Value) -> CallToolResult {
         CallToolResult::error(vec![rmcp::model::ContentBlock::text(value.to_string())])
     }
 
-    /// Unknown-uid error (including the available uid list).
+    /// Unknown-uid error (with the available uid list).
     fn uid_not_found(uid: &str, available: &[String]) -> CallToolResult {
         Self::error_output(json!({
             "error": format!("connection '{uid}' not found"),
@@ -56,14 +55,12 @@ impl DbQueryServer {
         }))
     }
 
-    /// Literal-safe quoting for schema / table inputs (single quotes
-    /// doubled).
+    /// Literal-safe quoting for schema / table inputs (single quotes doubled).
     fn quote_literal(value: &str) -> String {
         format!("'{}'", value.replace('\'', "''"))
     }
 
-    /// Validation denial details (passing through sql-validator's
-    /// denials).
+    /// Validation denial details (passing through sql-validator's denials).
     fn validation_denied(denials: &[excapp_db_sql_validator::Denial]) -> CallToolResult {
         let items: Vec<serde_json::Value> = denials
             .iter()
@@ -81,12 +78,12 @@ impl DbQueryServer {
         }))
     }
 
-    /// Execution error pass-through.
-    fn executor_error(err: excapp_db_sql_executor::pg::PgError) -> CallToolResult {
+    /// Execution errors passed through.
+    fn executor_error(err: excapp_db_sql_executor::ExecutorError) -> CallToolResult {
         Self::error_output(json!({ "error": err.to_string() }))
     }
 
-    /// QueryResult -> output JSON.
+    /// QueryResult → output JSON.
     fn query_result(result: QueryResult) -> CallToolResult {
         let columns: Vec<&str> = result.columns.iter().map(String::as_str).collect();
         let rows: Vec<Vec<serde_json::Value>> = result
@@ -107,16 +104,16 @@ impl DbQueryServer {
         Self::json_output(json!({ "columns": columns, "rows": rows }))
     }
 
-    /// Execute a fixed metadata query on the given connection and take
-    /// the first column's text.
+    /// Run a fixed metadata query on the given connection and take the first
+    /// column's text.
     async fn metadata_column(
         &self,
         uid: &str,
         database: Option<&str>,
         sql: &str,
-    ) -> Result<Vec<String>, excapp_db_sql_executor::pg::PgError> {
-        // uid existence was validated upstream; resolve the executor by
-        // database (None = configured default) and take the first column.
+    ) -> Result<Vec<String>, excapp_db_sql_executor::ExecutorError> {
+        // The uid's existence was validated upstream; resolve the executor per
+        // database (None = the configured default) and take the first column.
         let executor = match self.resolve(uid, database, None) {
             Ok(e) => e,
             Err(_) => unreachable!("uid validated by caller"),
@@ -131,15 +128,15 @@ impl DbQueryServer {
         uid: &str,
         database: Option<&str>,
         schema: Option<&str>,
-    ) -> Result<std::sync::Arc<excapp_db_sql_executor::pg::PgExecutor>, CallToolResult> {
+    ) -> Result<std::sync::Arc<excapp_db_sql_executor::DatabaseExecutor>, CallToolResult> {
         let executor = self
             .state
             .executor(uid)
             .ok_or_else(|| Self::uid_not_found(uid, &self.state.uids()))?;
-        // database None means the configured default database; when it
-        // matches the configured database and the schema is the default
-        // (None or public), reuse the base executor (public is first in
-        // PG's default search_path, no derivation needed).
+        // database None: the configured default database; when it matches the
+        // configured one and schema is the default (None or public), the base
+        // executor is reused (public is the first entry of PG's default
+        // search_path, no derivation needed).
         let config_db = self.state.database_of(uid);
         let same_db = match database {
             None => true,
@@ -149,8 +146,8 @@ impl DbQueryServer {
         if same_db && default_public {
             return Ok(executor);
         }
-        // Other cases (cross-database or explicit schema) derive:
-        // cross-database + optional search_path.
+        // Remaining cases (cross-database or explicit schema) derive: cross
+        // database + optional search_path.
         let target_db = database.unwrap_or_else(|| config_db.as_deref().unwrap_or("postgres"));
         match executor.for_database_with_schema(target_db, schema) {
             Ok(derived) => Ok(std::sync::Arc::new(derived)),
@@ -159,7 +156,7 @@ impl DbQueryServer {
     }
 }
 
-// ---- Tool parameters (JSON Schema generated from serde definitions) ----
+// ---- Tool parameters (JSON schema generated from the serde definitions) ----
 
 /// List databases under a connection.
 #[derive(Deserialize, JsonSchema)]
@@ -184,7 +181,7 @@ pub(crate) struct SchemaParam {
     pub(crate) uid: String,
     /// Target database name.
     pub(crate) database: String,
-    /// PG schema (defaults to public, Postgres only).
+    /// PG schema (defaults to public; Postgres only).
     #[serde(default = "default_schema")]
     pub(crate) schema: String,
 }
@@ -200,7 +197,7 @@ pub(crate) struct TableParam {
     pub(crate) uid: String,
     /// Target database name.
     pub(crate) database: String,
-    /// PG schema (defaults to public, Postgres only).
+    /// PG schema (defaults to public; Postgres only).
     #[serde(default = "default_schema")]
     pub(crate) schema: String,
     /// Table name.
@@ -214,10 +211,10 @@ pub(crate) struct SqlParam {
     pub(crate) uid: String,
     /// Target database name.
     pub(crate) database: String,
-    /// PG schema (defaults to public, Postgres only).
+    /// PG schema (defaults to public; Postgres only).
     #[serde(default = "default_schema")]
     pub(crate) schema: String,
-    /// SQL to validate and execute.
+    /// The SQL to validate and execute.
     pub(crate) sql: String,
 }
 
@@ -257,8 +254,8 @@ impl DbQueryServer {
         &self,
         Parameters(param): Parameters<UidParam>,
     ) -> rmcp::model::CallToolResult {
-        // Instance-level query (pg_catalog is visible across databases);
-        // the connection's base executor suffices.
+        // Instance-level query (pg_catalog is visible across databases); the
+        // configured connection's base executor suffices.
         if self.state.executor(&param.uid).is_none() {
             return Self::uid_not_found(&param.uid, &self.state.uids());
         }
@@ -313,12 +310,11 @@ impl DbQueryServer {
             Ok(e) => e,
             Err(out) => return out,
         };
-        // pg_catalog query: information_schema is partition-unaware in PG
-        // (partition children are indistinguishable, and partitioned
-        // parents also project as BASE TABLE). Here we exclude the
-        // inherited children of partitioned parents and mark the parents
-        // PARTITIONED TABLE; traditional inheritance children stay
-        // listed.
+        // pg_catalog query: information_schema is unaware of PG partitioning
+        // (partition children are indistinguishable, and partition parents also
+        // project as BASE TABLE). Here the partition parent's inherited children
+        // are excluded and the parent is labeled PARTITIONED TABLE; traditional
+        // inheritance children stay listed.
         let sql = format!(
             "SELECT c.relname, \
              CASE c.relkind WHEN 'r' THEN 'BASE TABLE' WHEN 'p' THEN 'PARTITIONED TABLE' \
@@ -362,9 +358,9 @@ impl DbQueryServer {
             Err(out) => return out,
         };
 
-        // Column metadata + column comments (via pg_attribute: comments
-        // are only obtainable through catalog paths; types are rendered in
-        // full form via format_type, e.g. character varying(32)).
+        // Column metadata + column comments (via pg_attribute: comments are only
+        // available through the catalog path; types render in full form via
+        // format_type, e.g. character varying(32)).
         let columns_sql = format!(
             "SELECT a.attname, format_type(a.atttypid, a.atttypmod), \
              CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, \
@@ -413,9 +409,9 @@ impl DbQueryServer {
             _ => None,
         };
 
-        // DDL: catalog-assembled (column definitions + defaults + NOT
-        // NULL + primary key). Default expressions are rendered via
-        // pg_get_expr — pg_attrdef.adsrc was removed in PG 12.
+        // DDL: catalog assembly (column definitions + defaults + not-null +
+        // primary keys). Default expressions render via pg_get_expr —
+        // pg_attrdef.adsrc was removed in PG 12.
         let ddl_sql = format!(
             "SELECT 'CREATE TABLE ' || n.nspname || '.' || c.relname || ' (' || \
              string_agg(\
@@ -437,17 +433,17 @@ impl DbQueryServer {
             Self::quote_literal(&param.schema),
             Self::quote_literal(&param.table)
         );
-        // DDL assembly failure does not block column metadata
-        // (degradable), but the error is carried explicitly.
+        // A DDL assembly failure does not block column metadata (degradable),
+        // but the error is carried explicitly.
         let (ddl, ddl_error) = match executor.execute_metadata(&ddl_sql).await {
             Ok(r) if !r.rows.is_empty() => (r.rows[0][0].text.clone(), None),
             Ok(_) => (String::new(), None),
             Err(e) => (String::new(), Some(e.to_string())),
         };
-        // When a table comment exists, inline it as a comment line atop
-        // the DDL (column comments are not inlined, preserving the CREATE
-        // statement's executability/readability; they are already
-        // provided structurally via columns[].comment).
+        // When a table comment exists, inline it at the top of the DDL (column
+        // comments are not inlined, keeping the CREATE statement
+        // executable/readable; they are already provided structurally via
+        // columns[].comment).
         let ddl = match &table_comment {
             Some(c) => format!("-- {c}\n{ddl}"),
             None => ddl,
@@ -488,7 +484,11 @@ impl DbQueryServer {
         };
 
         // Mandatory validation: denials never reach execution.
-        let verdict = excapp_db_sql_validator::validate(&dialect, &param.sql);
+        let verdict = excapp_db_sql_validator::validate_with_policy(
+            &dialect,
+            &param.sql,
+            &self.state.policy(),
+        );
         if !verdict.allowed {
             return Self::validation_denied(&verdict.denials);
         }
@@ -512,9 +512,9 @@ impl ServerHandler for DbQueryServer {
         .with_instructions("db-query read-only SQL MCP server")
     }
 
-    // The prompt_handler macro would regenerate the whole ServerHandler
-    // impl (conflicting with tool_handler), so prompts are routed
-    // manually here in a form equivalent to the macro expansion.
+    // The prompt_handler macro would regenerate the whole ServerHandler impl
+    // (conflicting with tool_handler), so prompts are routed manually here in
+    // the macro-expansion-equivalent shape.
     fn get_prompt(
         &self,
         request: rmcp::model::GetPromptRequestParams,

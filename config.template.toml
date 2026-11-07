@@ -23,6 +23,37 @@ max_days = 7  # Maximum number of days log segments are kept
 addr = "127.0.0.1"  # Streamable service listen address
 port = 8000  # Streamable service listen port
 
+# =============================================================================
+# SQL validation policy (optional section; omitting it entirely = built-in
+# policy)
+#
+# Security boundaries:
+# - whitelist.kinds can only tighten: choose a subset of the built-in allow
+#   set (QUERY/EXPLAIN/SHOW/DESCRIBE); kinds not listed are denied. Non
+#   read-only kinds such as DML/DDL cannot be configured as allowed.
+# - blacklist.function is append-only: merged with the built-in function
+#   blacklist; built-in entries cannot be removed.
+# - Invalid values fail fast at startup.
+# =============================================================================
+
+[validator.sql.whitelist]
+# Subset of allowed statement kinds; default [] = the built-in full set.
+# Allowed values: QUERY / EXPLAIN / SHOW / DESCRIBE (case-insensitive)
+kinds = []
+
+[validator.sql.pg.blacklist]
+# Appended postgres function denials (valid identifier shapes, lowercased and
+# deduplicated)
+function = []
+
+[validator.sql.mysql.blacklist]
+# Appended mysql function denials
+function = []
+
+[validator.sql.sqlite.blacklist]
+# Appended sqlite function denials
+function = []
+
 [app.databases]
 watch_interval = 30  # Watch interval in seconds
 

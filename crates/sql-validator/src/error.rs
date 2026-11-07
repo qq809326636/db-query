@@ -1,42 +1,43 @@
-//! Validation result contract: public allow/deny result types and English
-//! error message rendering.
-//!
-//! Rejection is a normal business outcome (not an exception): the public
-//! API returns [`ValidationResult`], where each denial carries a
-//! machine-readable category ([`RejectCategory`]) and a stable English
-//! message. Message templates live in this module; the judging module is
-//! unaware of English wording.
+//! Validation result contract: the public allow/deny result types and the
+//! English error message rendering.
+//! Denial is a normal business outcome (not an exception): the public API
+//! returns [`ValidationResult`], where each denial carries a machine-readable
+//! category ([`RejectCategory`]) and a stable English explanation.
+//! Message templates are centralized in this module; the verdict modules know
+//! nothing about English wording.
 
 use std::fmt;
 
-/// Machine-readable category of a validation rejection.
-///
-/// Adding or removing variants is a breaking change, reflected in the
-/// crate version number.
+/// Machine-readable categories of validation denials.
+/// Adding or removing variants is a breaking change, reflected in the crate
+/// version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RejectCategory {
     /// The dialect identifier is empty or not in the supported list.
     UnsupportedDialect,
-    /// SQL syntax parsing failed.
+    /// The SQL failed to parse.
     ParseError,
-    /// The input is empty or contains no statements (empty string /
-    /// semicolons only / comments only).
+    /// The input is empty or contains no statements (empty string / bare
+    /// semicolons / comments only).
     EmptyInput,
-    /// The statement is not on the read-only whitelist (DML / DDL /
-    /// transaction control / privilege & session / COPY / unrecognized).
+    /// The statement is outside the read-only whitelist (DML / DDL / transaction
+    /// control / privilege-session / COPY / unrecognized).
     NonReadOnly,
     /// The query carries a locking clause (FOR UPDATE / FOR SHARE).
     LockingClause,
-    /// The query contains a data-modifying CTE (INSERT/UPDATE/DELETE/MERGE
-    /// inside WITH).
+    /// The query contains a data-modifying CTE (INSERT/UPDATE/DELETE/MERGE inside
+    /// WITH).
     DataModifyingCte,
-    /// An expression calls a blacklisted function (session-level advisory
-    /// locks / server administration functions).
+    /// An expression calls a blacklisted function (session-level advisory locks
+    /// / server-side administrative functions).
     ForbiddenFunction,
+    /// The statement kind was tightened out by policy (not in the allowed set
+    /// after kinds subsetting).
+    PolicyRestricted,
 }
 
 impl RejectCategory {
-    /// Short English name of the category, for logging and debugging.
+    /// Short English name of the category, for logs and debugging.
     pub fn as_str(self) -> &'static str {
         match self {
             RejectCategory::UnsupportedDialect => "unsupported dialect",
@@ -46,6 +47,7 @@ impl RejectCategory {
             RejectCategory::LockingClause => "locking clause",
             RejectCategory::DataModifyingCte => "data-modifying CTE",
             RejectCategory::ForbiddenFunction => "forbidden function",
+            RejectCategory::PolicyRestricted => "policy restricted",
         }
     }
 }
@@ -56,31 +58,30 @@ impl fmt::Display for RejectCategory {
     }
 }
 
-/// Report of a single rejected statement.
+/// Report of a single denied statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Denial {
-    /// Statement number, 1-based within a multi-statement batch;
-    /// batch-level errors (dialect / parsing / empty input) use 1.
+    /// Statement index, starting at 1 in a multi-statement batch; batch-level
+    /// errors (dialect / parse / empty input) take 1.
     pub index: usize,
-    /// Rejection category.
+    /// The denial category.
     pub category: RejectCategory,
-    /// Stable English message, including the full rejected statement
-    /// text (never truncated).
+    /// Stable English explanation, including the full denied statement text
+    /// (never truncated).
     pub message: String,
 }
 
-/// Validation result: `allowed` is always equivalent to `denials` being
-/// empty.
+/// Validation result: `allowed` is always equivalent to `denials` being empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationResult {
-    /// True when every statement is on the whitelist.
+    /// True when every statement is whitelisted.
     pub allowed: bool,
-    /// Per-statement denial reports; statements that pass do not appear.
+    /// Per-statement denial reports; statements that pass never appear.
     pub denials: Vec<Denial>,
 }
 
 impl ValidationResult {
-    /// Construct an allowed result (no denials).
+    /// Build an allowed result (no denials).
     pub fn allowed() -> Self {
         Self {
             allowed: true,
@@ -88,8 +89,8 @@ impl ValidationResult {
         }
     }
 
-    /// Construct a denied result; `allowed` is derived from whether
-    /// `denials` is empty, so the two can never contradict.
+    /// Build a denied result; `allowed` is derived from whether `denials` is
+    /// empty, so the two can never disagree.
     pub fn denied(denials: Vec<Denial>) -> Self {
         Self {
             allowed: denials.is_empty(),
@@ -98,21 +99,19 @@ impl ValidationResult {
     }
 }
 
-/// Internal error type for batch-level failures (dialect / parsing /
-/// empty input), ultimately rendered into [`ValidationResult`].
-///
-/// `Display` always goes through [`BatchError::render`], the stable
-/// English wording facing callers.
+/// Internal error type for batch-level failures (dialect / parse / empty
+/// input), ultimately rendered into [`ValidationResult`].
+/// `Display` uniformly goes through [`BatchError::render`], the stable
+/// caller-facing English wording.
 #[derive(Debug, thiserror::Error)]
 #[error("{}", self.render())]
 pub(crate) enum BatchError {
     /// The dialect identifier is empty.
     EmptyDialect,
-    /// The dialect identifier is not in the supported list; `0` is the
-    /// raw identifier.
+    /// The dialect identifier is not in the supported list; `0` is the raw
+    /// identifier.
     UnsupportedDialect(String),
-    /// SQL parsing failed; `0` is the parser error message (with
-    /// position).
+    /// The SQL failed to parse; `0` is the parser error message (with position).
     Parse(String),
     /// The input contains no statements.
     EmptyInput,
@@ -129,19 +128,19 @@ impl BatchError {
         }
     }
 
-    /// Render into the public English message (stable wording, no
-    /// nondeterministic content such as timestamps).
+    /// Render into the public English explanation (stable wording, nothing
+    /// nondeterministic like timestamps).
     ///
-    /// The `Display` impl of this type (thiserror-derived) is only for
-    /// internal logs; the wording facing callers is defined by this
-    /// method.
+    /// The `Display` impl on this type (thiserror-derived) is for internal logs
+    /// only; the caller-facing wording is this method.
     fn render(&self) -> String {
         match self {
             BatchError::EmptyDialect => {
-                "Dialect identifier is empty. Supported dialects: postgres.".to_string()
+                "Dialect identifier is empty. Supported dialects: postgres, mysql, sqlite."
+                    .to_string()
             }
             BatchError::UnsupportedDialect(raw) => {
-                format!("Unsupported dialect '{raw}'. Supported dialects: postgres.")
+                format!("Unsupported dialect '{raw}'. Supported dialects: postgres, mysql, sqlite.")
             }
             BatchError::Parse(detail) => {
                 format!("Failed to parse SQL: {detail}.")
@@ -150,7 +149,7 @@ impl BatchError {
         }
     }
 
-    /// Convert into a public denial report (batch-level errors use index 1).
+    /// Convert into the public denial report (batch-level errors take index 1).
     pub(crate) fn into_denial(self) -> Denial {
         Denial {
             index: 1,
@@ -160,7 +159,7 @@ impl BatchError {
     }
 }
 
-/// Render the English message for a single not-read-only rejection.
+/// Render the English explanation for a non-read-only denial.
 pub(crate) fn render_non_read_only(index: usize, kind: &str, statement: &str) -> Denial {
     Denial {
         index,
@@ -171,7 +170,7 @@ pub(crate) fn render_non_read_only(index: usize, kind: &str, statement: &str) ->
     }
 }
 
-/// Render the English message for a single locking-clause rejection.
+/// Render the English explanation for a locking-clause denial.
 pub(crate) fn render_locking_clause(index: usize, statement: &str) -> Denial {
     Denial {
         index,
@@ -182,10 +181,10 @@ pub(crate) fn render_locking_clause(index: usize, statement: &str) -> Denial {
     }
 }
 
-/// Render the English message for a single data-modifying CTE rejection.
+/// Render the English explanation for a data-modifying-CTE denial.
 ///
-/// `cte` is the CTE name (alias), `kind` is the statement category inside
-/// it (e.g. DML), and `statement` is the full rejected statement text.
+/// `cte` is the CTE name (alias), `kind` the statement kind inside it (e.g.
+/// DML), and `statement` the full denied statement text.
 pub(crate) fn render_data_modifying_cte(
     index: usize,
     cte: &str,
@@ -201,16 +200,30 @@ pub(crate) fn render_data_modifying_cte(
     }
 }
 
-/// Render the English message for a single forbidden-function rejection.
+/// Render the English explanation for a blacklisted-function denial.
 ///
-/// `function` is the matched function name (normalized to lowercase),
-/// and `statement` is the full rejected statement text.
+/// `function` is the hit function name (normalized to lowercase), `statement`
+/// the full denied statement text.
 pub(crate) fn render_forbidden_function(index: usize, function: &str, statement: &str) -> Denial {
     Denial {
         index,
         category: RejectCategory::ForbiddenFunction,
         message: format!(
             "Statement #{index} calls forbidden function '{function}' (session-level advisory locks and server administration functions are not allowed in queries). Statement: {statement}"
+        ),
+    }
+}
+
+/// Render the English explanation for a policy-tightened denial.
+///
+/// `kind_name` is the tightened statement kind's name (e.g. `EXPLAIN`),
+/// `statement` the full denied statement text.
+pub(crate) fn render_policy_restricted(index: usize, kind_name: &str, statement: &str) -> Denial {
+    Denial {
+        index,
+        category: RejectCategory::PolicyRestricted,
+        message: format!(
+            "Statement #{index} uses statement kind '{kind_name}' which is disabled by the validator policy. Statement: {statement}"
         ),
     }
 }
