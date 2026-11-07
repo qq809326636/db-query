@@ -1,6 +1,6 @@
 //! MCP tool layer: six tools (uid addressing), shared by both transports.
 //!
-//! - list-conf: reads connection metadata locally (no database round trip)
+//! - list-connection: reads connection metadata locally (no database round trip)
 //! - list-database / list-schema / list-table / describe-table: fixed metadata
 //!   queries
 //! - execute-sql: mandatory sql-validator validation → sql-executor execution
@@ -222,11 +222,11 @@ pub(crate) struct SqlParam {
 impl DbQueryServer {
     /// List configured database connections (uid, name, description, default db, db type).
     #[tool(
-        name = "list-conf",
+        name = "list-connection",
         title = "List Connections",
         description = "List configured database connections with uid, name, description, default database (db) and database type (type)."
     )]
-    async fn list_conf(&self) -> rmcp::model::CallToolResult {
+    async fn list_connection(&self) -> rmcp::model::CallToolResult {
         let connections: Vec<serde_json::Value> = self
             .state
             .connections()

@@ -27,7 +27,7 @@ pub(crate) enum Lang {
 // ---- Prompt parameter structs (tool params + lang; does not intrude on
 // tools.rs structs) ----
 
-/// guide / list-conf: lang only.
+/// guide / list-connection: lang only.
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct LangParam {
     /// Guide language (zh / en, defaults to zh).
@@ -138,14 +138,14 @@ db-query 只读查询 MCP 使用指引
 ================================
 
 工具链（建议顺序）：
-1. list-conf：列出配置的全部连接（uid / name / description）——入口，不连数据库。
+1. list-connection：列出配置的全部连接（uid / name / description）——入口，不连数据库。
 2. list-database：列出连接可见的数据库（入参 uid）。
 3. list-schema：列出库内 schema，排除系统 schema（入参 uid + database）。
 4. list-table：列出 schema 内表与视图（入参 uid + database + schema，schema 缺省 public）。
 5. describe-table：表结构（入参 uid + database + schema + table）。
 6. execute-sql：校验并执行只读 SQL（入参 uid + database + schema + sql）。
 
-组合流程：list-conf 找 uid → list-database 选库 → list-schema 定位 schema →
+组合流程：list-connection 找 uid → list-database 选库 → list-schema 定位 schema →
 list-table 找表 → describe-table 看结构与注释 → execute-sql 查询数据。
 
 异常与限制：
@@ -165,14 +165,14 @@ db-query read-only SQL MCP Usage Guide
 ======================================
 
 Tool chain (recommended order):
-1. list-conf: list configured connections (uid / name / description) - entry point, no database access.
+1. list-connection: list configured connections (uid / name / description) - entry point, no database access.
 2. list-database: list databases visible to the connection (params: uid).
 3. list-schema: list schemas in a database, system schemas excluded (params: uid + database).
 4. list-table: list tables and views in a schema (params: uid + database + schema; schema defaults to public).
 5. describe-table: table structure (params: uid + database + schema + table).
 6. execute-sql: validate then execute read-only SQL (params: uid + database + schema + sql).
 
-Typical flow: list-conf to find uid -> list-database to pick a database ->
+Typical flow: list-connection to find uid -> list-database to pick a database ->
 list-schema -> list-table -> describe-table for structure and comments -> execute-sql for data.
 
 Exceptions and limits:
@@ -192,14 +192,14 @@ Connection secrets (password, host, port) never appear in any output.";
         localized(p.lang, zh.to_string(), en.to_string())
     }
 
-    /// Prompt for list-conf (lang selects the language).
+    /// Prompt for list-connection (lang selects the language).
     #[prompt(
-        name = "list-conf",
+        name = "list-connection",
         description = "Usage guide: list configured database connections (lang selects the language)"
     )]
-    async fn prompt_list_conf(&self, Parameters(p): Parameters<LangParam>) -> Vec<PromptMessage> {
+    async fn prompt_list_connection(&self, Parameters(p): Parameters<LangParam>) -> Vec<PromptMessage> {
         let zh = "\
-工具 list-conf 使用指引
+工具 list-connection 使用指引
 ========================
 用途：列出配置文件中的全部数据库连接，是发现可用 uid 的入口；不连接数据库。
 
@@ -209,7 +209,7 @@ Connection secrets (password, host, port) never appear in any output.";
 
 衔接建议：拿到 uid 后调用 list-database 查看该连接可用的数据库。";
         let en = "\
-Prompt for tool list-conf
+Prompt for tool list-connection
 =========================
 Purpose: list all database connections from configuration; it is the entry point to
 discover available uids. No database access.
