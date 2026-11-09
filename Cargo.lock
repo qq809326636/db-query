@@ -338,7 +338,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cli"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "core",
@@ -384,7 +384,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "core"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "sql-executor"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "core",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "sql-mcp"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "arc-swap",
  "axum",
@@ -2091,7 +2091,7 @@ dependencies = [
 
 [[package]]
 name = "sql-validator"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "sqlparser",
  "thiserror",
