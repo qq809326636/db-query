@@ -1,5 +1,3 @@
-//! Server startup assembly: config → logging → executor set → scheduling →
-//! transport server.
 //!
 //! Fail fast: an invalid config or an unsupported db_type exits non-zero; an
 //! unreachable database does not block startup (lazy connections, health checks
@@ -9,7 +7,6 @@
 use crate::{DbQueryServer, ExecutorSet, SharedState};
 use std::path::Path;
 use std::sync::Arc;
-
 /// Common startup sequence: returns (config, shared state, schedule handle).
 ///
 /// Any structural error returns an English message (printed to stderr, exiting
@@ -21,14 +18,11 @@ async fn setup(
     let config = excapp_db_core::config::AppConfig::load(config_path)?;
 
     // Data root directory: ensured to exist after loading (idempotent creation;
-    // failure fails fast).
     config.ensure_data_dir()?;
-
     // Logging initialization: console is disabled in stdio mode (stdout is the
     // protocol channel).
     excapp_db_core::logger::init(&config, mode)
         .map_err(|e| format!("logging initialization failed: {e}"))?;
-
     // Executor set: an unsupported db_type fails the whole set (fail fast, with
     // the database name); the validation policy is built alongside (core already
     // ran startup validation; this second line of defense also fails fast).
@@ -38,7 +32,6 @@ async fn setup(
 
     Ok((config, state))
 }
-
 /// Start the WatchScheduler: health checks (per database) + config hot reload
 /// (atomic swap).
 fn start_scheduler(
@@ -52,7 +45,6 @@ fn start_scheduler(
 
     // Health checks: one per database (the matching implementation per db_type).
     // The scheduler accepts a single HealthCheck implementation; a combinator
-    // aggregates the per-database checks.
     let mut checks: Vec<Box<dyn excapp_db_core::watch::HealthCheck>> = Vec::new();
     for db in &config.databases {
         if let Some(executor) = state.executor(&db.uid) {
@@ -66,6 +58,9 @@ fn start_scheduler(
                 excapp_db_sql_executor::DatabaseExecutor::Sqlite(e) => Box::new(
                     excapp_db_sql_executor::sqlite::SqliteHealthCheck::new(e.shared_pool()),
                 ),
+                excapp_db_sql_executor::DatabaseExecutor::Redis(e) => Box::new(
+                    excapp_db_sql_executor::redis::RedisHealthCheck::new(e.shared_pool()),
+                ),
             };
             checks.push(check);
         }
@@ -73,11 +68,9 @@ fn start_scheduler(
     let health = CombinedHealthCheck { checks };
 
     excapp_db_core::watch::start(path.clone(), interval, health, move |new_config| {
-        // Config change: build the new set and swap atomically; on failure the
         // scheduler layer keeps the old set.
         match ExecutorSet::build(&new_config) {
             Ok(new_set) => {
-                // Policy swaps in sync: on build failure the old policy is kept
                 // (logged only, not blocking the executor-set swap).
                 match ExecutorSet::build_policy(&new_config) {
                     Ok(new_policy) => state.replace_policy(new_policy),
@@ -93,13 +86,11 @@ fn start_scheduler(
             }
             Err(e) => {
                 // Theoretically unreachable (the scheduler layer already validated
-                // the config); recorded defensively.
                 tracing::error!("config reload produced invalid executor set: {e}");
             }
         }
     })
 }
-
 /// Multi-database health-check combinator: probes each database, aggregating
 /// failures into a single English message.
 struct CombinedHealthCheck {
@@ -175,8 +166,6 @@ pub async fn run_streamable(config_path: &Path) -> i32 {
     // DNS rebinding protection (Host header validation) disabled: any Host
     // header is accepted, suiting LAN IP / domain / port-mapping deployments.
     // The security boundary is delegated to the deployment layer (network
-    // isolation / reverse proxy) — consistent with this project's "MCP access
-    // implies trust" model.
     let http_config = StreamableHttpServerConfig::default().disable_allowed_hosts();
 
     let service = StreamableHttpService::new(
@@ -196,9 +185,7 @@ pub async fn run_streamable(config_path: &Path) -> i32 {
     eprintln!("sql-mcp: streamable http server listening on http://{addr}/mcp");
 
     // axum routing: /mcp mounts the StreamableHttpService; 1 MB request body
-    // limit.
     let app = axum_router(service);
-
     // Graceful shutdown: SIGTERM/SIGINT → stop accepting new connections →
     // drain (10 s ceiling).
     let shutdown = async {
@@ -225,18 +212,15 @@ pub async fn run_streamable(config_path: &Path) -> i32 {
 }
 
 /// The rmcp Streamable HTTP service type (this service + local session
-/// management).
 type McpService = rmcp::transport::streamable_http_server::StreamableHttpService<
     DbQueryServer,
     rmcp::transport::streamable_http_server::session::local::LocalSessionManager,
 >;
 
 /// axum route assembly: `/mcp` embeds the rmcp StreamableHttpService (a tower
-/// Service).
 fn axum_router(service: McpService) -> axum::Router {
     axum::Router::new().nest_service("/mcp", service)
 }
-
 /// Schedule-start wrapper: stopped on Drop (same lifecycle as the transport
 /// server).
 struct SchedulerStarter;

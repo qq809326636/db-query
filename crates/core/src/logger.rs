@@ -1,9 +1,3 @@
-//! Logging init: assembles console / file output targets per the
-//! `[app.log]` config.
-//!
-//! Each binary calls [`init`] at the earliest point of startup; a
-//! repeated init in the same process returns the `logging is already
-//! initialized` error (the tracing global subscriber can be installed
 //! only once — returning an error instead of an idempotent success
 //! avoids masking config races where a second set of parameters never
 //! takes effect).
@@ -30,7 +24,6 @@ pub enum TransportMode {
     Standard,
     /// stdio MCP transport: stdout is the protocol channel, so the
     /// console target is forcibly disabled (one warning printed to
-    /// stderr); the file target is unaffected.
     Stdio,
 }
 
@@ -54,14 +47,8 @@ enum LogFormat {
 ///   (default json);
 /// - `Stdio` with `console.enabled`: disables console and writes one
 ///   warning directly to stderr;
-/// - all targets off: installs a zero-output subscriber (all events
-///   dropped), writes one warning directly to stderr, and runs
-///   silently;
-/// - calling again after success returns `Err("logging is already
-///   initialized")` without panicking.
 pub fn init(config: &AppConfig, mode: TransportMode) -> Result<(), String> {
     let log = &config.app.log;
-
     // Pure in-memory parsing first: invalid values return before any
     // IO resource is constructed (defensive fallback; the normal path
     // is guaranteed by load-time validation).
@@ -69,8 +56,6 @@ pub fn init(config: &AppConfig, mode: TransportMode) -> Result<(), String> {
         parse_level(&log.level).ok_or_else(|| format!("unknown log level: {}", log.level))?;
     let console_format = parse_format(&resolve_console_format(log))?;
     let file_format = parse_format(&log.file.format)?;
-
-    // File target construction (fail fast: directory creation / unknown
     // policy fails the init). When disabled, a sink placeholder keeps
     // the subscriber structure constant; the off semantics are
     // expressed via the OFF filter.
@@ -88,8 +73,6 @@ pub fn init(config: &AppConfig, mode: TransportMode) -> Result<(), String> {
 
     // The two warnings: written directly to stderr before the subscriber
     // is installed (not via tracing — in the all-off scenario, output
-    // via tracing would be dropped by the empty subscriber), once each
-    // over the process lifetime.
     if mode == TransportMode::Stdio && log.console.enabled {
         eprintln!(
             "warning: console logging is disabled in stdio mode (stdout is reserved for the MCP protocol channel)"
@@ -105,8 +88,6 @@ pub fn init(config: &AppConfig, mode: TransportMode) -> Result<(), String> {
     // is set uniformly via with_filter on each layer, applying to all
     // enabled targets consistently; disabled targets use the OFF filter
     // (zero output). text / json are type-level differences (different
-    // EventFormatters), and a generic assembly function removes the
-    // duplication across the four combination paths.
     let console_filter = if console_enabled {
         level
     } else {
@@ -157,7 +138,6 @@ pub fn init(config: &AppConfig, mode: TransportMode) -> Result<(), String> {
         ),
     }
 }
-
 /// Stack the two layers onto the Registry and install the global
 /// subscriber (repeated init returns an English error).
 fn assemble<C, F>(console: C, file: F) -> Result<(), String>
@@ -189,7 +169,6 @@ fn resolve_console_format(log: &crate::config::LogSection) -> String {
 ///
 /// Config loading has already validated the enum; the normal path
 /// always hits. A miss returns an error the caller turns into an init
-/// failure (defensive fallback, not a second validation path).
 fn parse_format(value: &str) -> Result<LogFormat, String> {
     match value {
         "text" => Ok(LogFormat::Text),
@@ -197,7 +176,6 @@ fn parse_format(value: &str) -> Result<LogFormat, String> {
         other => Err(format!("unknown log format: {other}")),
     }
 }
-
 /// Map a config level string to a tracing level filter.
 ///
 /// Config loading has already validated the enum; the normal path
@@ -264,13 +242,11 @@ mod tests {
     #[test]
     fn test_transport_mode_enum_semantics() {
         // The two modes are distinguishable and the enum is complete
-        // (Standard / Stdio, two values).
         assert_ne!(TransportMode::Standard, TransportMode::Stdio);
     }
 
     #[test]
     fn test_init_rejects_unknown_level_defensively() {
-        // Construct an invalid level that bypasses load validation:
         // init must return an error instead of panicking.
         let mut config = AppConfig::parse(&config_text("level = \"info\"")).unwrap();
         config.app.log.level = "loud".to_string();
@@ -281,7 +257,6 @@ mod tests {
     #[test]
     fn test_init_rejects_unknown_format_defensively() {
         // Construct an invalid format that bypasses load validation:
-        // init returns the error before constructing any IO resource.
         let mut config = AppConfig::parse(&config_text("level = \"info\"")).unwrap();
         config.app.log.format = "xml".to_string();
         let err = init(&config, TransportMode::Standard).unwrap_err();
@@ -292,7 +267,6 @@ mod tests {
     fn test_init_succeeds_then_repeat_returns_error() {
         // The first initializer within the test process; if another
         // test already initialized, the first assertion is skipped
-        // (the tracing global subscriber is unique).
         let config = AppConfig::parse(&config_text(
             "level = \"info\"\n\n[app.log.console]\nenabled = true\n\n[app.log.file]\nenabled = false",
         ))

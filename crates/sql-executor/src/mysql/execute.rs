@@ -1,4 +1,3 @@
-//! `MyExecutor`: query execution (text protocol, value stringification, row and
 //! byte limit protection).
 
 use super::{MyError, RESULT_BYTE_LIMIT, ROW_LIMIT};
@@ -7,7 +6,6 @@ use futures_util::StreamExt;
 
 use mysql_async::prelude::*;
 use mysql_async::{Column, Row, Value};
-
 /// MySQL query executor: holds the connection pool and implements the unified
 /// execution entry.
 pub struct MyExecutor {
@@ -25,7 +23,6 @@ impl std::fmt::Debug for MyExecutor {
 
 impl MyExecutor {
     /// Create the executor from config (builds the pool; invalid `extra_opts`
-    /// errors at pool-build time).
     pub fn new(config: &excapp_db_core::config::DatabaseConfig) -> Result<Self, MyError> {
         Ok(Self {
             pool: std::sync::Arc::new(super::MyPool::new(config)?),
@@ -37,10 +34,6 @@ impl MyExecutor {
     ///
     /// - The result is the column names + row values (text + null flags) of the
     ///   last statement that has a result set;
-    /// - Over 100 rows or over 10MB of total text bytes fails the whole batch,
-    ///   never returning partial results;
-    /// - The SQL is assumed to be already validated by the caller via
-    ///   sql-validator.
     pub async fn execute(&self, sql: &str) -> Result<QueryResult, MyError> {
         self.run(sql, true).await
     }
@@ -52,12 +45,9 @@ impl MyExecutor {
     ///
     /// Only for metadata queries assembled statically inside caller code
     /// (information_schema etc.); **never** for user-supplied SQL (which must go
-    /// through [`execute`]).
     pub async fn execute_metadata(&self, sql: &str) -> Result<QueryResult, MyError> {
         self.run(sql, false).await
     }
-
-    /// Text-protocol execution backbone: same-string prefix + per-result-set
     /// consumption.
     ///
     /// Every execution atomically binds the session prefix (the timeout SET; a
@@ -80,8 +70,6 @@ impl MyExecutor {
         let mut result_rows: Vec<Vec<CellValue>> = Vec::new();
         let mut row_count: usize = 0;
         let mut byte_total: usize = 0;
-
-        // Advance one result set at a time: `stream()` returns the next result
         // set each call (None means no more); column names are available as soon
         // as the result set is established — **empty result sets keep their
         // column names too** (the text protocol sends column definitions before
@@ -137,7 +125,6 @@ impl MyExecutor {
 
             // Result sets with column definitions (including empty ones) override
             // the final result; statements producing only OK packets (e.g. SET)
-            // have empty definitions and do not participate.
             if !set_columns.is_empty() {
                 columns = set_columns;
                 result_rows = set_rows;
@@ -147,6 +134,7 @@ impl MyExecutor {
         Ok(QueryResult {
             columns,
             rows: result_rows,
+            cursor: None,
         })
     }
 
@@ -155,6 +143,10 @@ impl MyExecutor {
         std::sync::Arc::clone(&self.pool)
     }
 
+    /// Database id (for the enum-layer NotRedis error).
+    pub(crate) fn db_name(&self) -> &str {
+        &self.pool.db_name
+    }
     /// Derive an executor pointing at the same instance and the given database
     /// (for cross-database queries).
     pub fn for_database(&self, database: &str) -> Result<Self, MyError> {
@@ -188,7 +180,6 @@ impl MyExecutor {
 /// the BLOB family is judged by column type; BINARY / VARBINARY have string
 /// column types with charset 63 (numeric columns are excluded by their types).
 /// Judging by the flag would wrongly hex-encode the integer `1` (byte `0x31`)
-/// into `"31"`.
 fn is_binary_column(column: &Column) -> bool {
     use mysql_async::consts::ColumnType;
 
@@ -205,8 +196,6 @@ fn is_binary_column(column: &Column) -> bool {
         _ => false,
     }
 }
-
-/// Value stringification: NULL goes through the null flag, the binary family
 /// through lowercase hexadecimal, everything else as text.
 ///
 /// Under the text protocol the server already provides the textual shape per
@@ -335,7 +324,6 @@ mod tests {
             eprintln!("skipping: test mysql not available");
             return Ok(());
         }
-        // Type judgment under real column metadata: BLOB columns go hexadecimal,
         // INT / CHAR columns stay text (regression anchor: numerics were once
         // misjudged as binary and hex-encoded).
         let result = exec
@@ -373,7 +361,6 @@ mod tests {
             return Ok(());
         }
         // Empty result sets still keep column names (text protocol sends column
-        // definitions before row data).
         let result = exec.execute("SELECT 1 AS n WHERE false").await?;
         assert_eq!(result.columns, vec!["n".to_string()]);
         assert!(result.rows.is_empty());

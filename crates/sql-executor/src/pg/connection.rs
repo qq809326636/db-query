@@ -1,4 +1,3 @@
-//! PgConnection: PostgreSQL connection pool (lazy connect, max 10,
 //! recovers from drops on next acquire).
 
 use super::{POOL_MAX_SIZE, PgError, STATEMENT_TIMEOUT};
@@ -7,15 +6,11 @@ use excapp_db_core::config::DatabaseConfig;
 use tokio_postgres::Config;
 
 /// PostgreSQL connection pool: wraps a deadpool pool plus the database
-/// identity.
 pub struct PgPool {
     /// Database name (for error identity).
     pub(crate) db_name: String,
     /// The deadpool pool.
     pub(crate) inner: Pool,
-    /// Session prefix (the SET statement string atomically bound
-    /// before every query).
-    ///
     /// The target may be a transaction-level pooler proxy (pgbouncer
     /// style): it strips startup packet options and resets session-level
     /// GUCs when recycling backend connections — so the timeout and
@@ -41,7 +36,6 @@ impl std::fmt::Debug for PgPool {
 }
 
 impl PgPool {
-    /// Create a pool from the config (lazy: no connection is established).
     ///
     /// When `extra_opts` is non-empty, space-separated `key=value` pairs
     /// are passed through to the connection config; anything not in
@@ -85,14 +79,9 @@ impl PgPool {
     /// database (for cross-database queries).
     ///
     /// Reuses this pool's connection config (host/port/credentials/
-    /// extra_opts), replacing only dbname; the database name is validated
-    /// against a character whitelist (alphanumerics plus `_` and `-`) to
-    /// prevent connection-string injection.
     pub fn for_database(&self, database: &str) -> Result<Self, PgError> {
         self.for_database_with_schema(database, None)
     }
-
-    /// Same as [`for_database`], additionally setting a default schema
     /// (via search_path).
     ///
     /// The schema name is validated against the same character whitelist
@@ -134,8 +123,6 @@ impl PgPool {
 
         // Session prefix: the timeout is always set; when a schema is
         // given, search_path is set as well (both already validated
-        // against character whitelists; multi-statement simple query is
-        // safe).
         let session_prefix = match schema {
             Some(schema) => format!("SET search_path TO {schema}; {}", timeout_prefix()),
             None => timeout_prefix(),
@@ -165,7 +152,6 @@ impl PgPool {
     }
 
     /// Acquire a connection from the pool; setup/recycling failures map
-    /// to [`PgError::Connection`] (including the database identity).
     pub(crate) async fn acquire(&self) -> Result<deadpool_postgres::Client, PgError> {
         self.inner.get().await.map_err(|e| PgError::Connection {
             db_name: self.db_name.clone(),
@@ -175,13 +161,9 @@ impl PgPool {
 }
 
 /// Build the session prefix for the statement timeout (sent in the same
-/// string as the query, atomically bound).
 fn timeout_prefix() -> String {
     format!("SET statement_timeout = '{STATEMENT_TIMEOUT}'; ")
 }
-
-/// Concatenate the `key=value` pairs from `extra_opts` into the startup
-/// options.
 ///
 /// Each pair gets a `-c` prefix and the fragments are joined with spaces
 /// into a **single** [`Config::options`] call: `options()` is a setter
@@ -203,7 +185,6 @@ fn append_extra_opts(
         };
         // Whitelist parameter keys: accept only legal identifier
         // forms of PG connection parameters, preventing arbitrary
-        // content from being concatenated into the connection string.
         if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(PgError::InvalidExtraOpts {
                 db_name: db_name.to_string(),
@@ -248,7 +229,6 @@ mod tests {
     #[test]
     fn test_pool_is_lazy() {
         // Lazy connect: building a pool pointing at a nonexistent port
-        // must also succeed (no connection triggered).
         let mut config = crate::pg::test_config();
         config.port = 59999;
         assert!(PgPool::new(&config).is_ok());
@@ -284,8 +264,6 @@ mod tests {
         // BUG-04 regression: the timeout is bound atomically via the
         // pre-query SET prefix (startup options are stripped by proxies,
         // and a one-shot SET after connect is reset by them; the same-
-        // string prefix is the only reliable form), and must be visible
-        // as 30s inside the execution path.
         let executor = crate::pg::PgExecutor::new(&crate::pg::test_config()).unwrap();
         if !crate::pg::connection_available(&executor.shared_pool()).await {
             eprintln!("skipping: test postgres not available");
@@ -311,7 +289,6 @@ mod tests {
         // Auth failure: the server message for SQLSTATE 28P01 varies with
         // locale (English "password authentication failed" / Chinese
         // equivalent), so assert the code first and keep the English text
-        // as a fallback.
         assert!(
             msg.contains("28P01") || msg.contains("password authentication"),
             "{msg}"
@@ -322,7 +299,6 @@ mod tests {
         let pool = PgPool::new(&config).unwrap();
         let err = pool.acquire().await.unwrap_err();
         let msg = err.to_string();
-        // Connection failure: port refusal or a timeout caused by a
         // silently-dropping firewall are both legitimate network paths
         // for this failure class.
         assert!(

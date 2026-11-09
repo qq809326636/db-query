@@ -1,6 +1,3 @@
-//! MCP prompt layer: the guide prompt + six per-tool prompts mirroring
-//! tool parameters.
-//!
 //! - Pure in-memory text rendering: no database access, no validation,
 //!   no SharedState access
 //! - The lang parameter (an ISO 639-1 subset, zh / en, defaulting to zh)
@@ -15,7 +12,6 @@ use serde::Deserialize;
 /// Guide language (an ISO 639-1 subset): defaults to zh; unknown values
 /// are rejected at deserialization.
 #[derive(Debug, Default, Clone, Copy, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
 pub(crate) enum Lang {
     /// Chinese.
     #[default]
@@ -23,7 +19,6 @@ pub(crate) enum Lang {
     /// English.
     En,
 }
-
 // ---- Prompt parameter structs (tool params + lang; does not intrude on
 // tools.rs structs) ----
 
@@ -105,6 +100,18 @@ pub(crate) struct SqlLangParam {
     pub(crate) schema: String,
     /// SQL to validate and execute.
     pub(crate) sql: String,
+    /// Guide language (zh / en, defaulting to zh).
+    #[serde(default)]
+    pub(crate) lang: Lang,
+}
+
+/// execute-redis: uid + command + lang.
+#[derive(Deserialize, JsonSchema)]
+pub(crate) struct RedisLangParam {
+    /// Configured connection uid.
+    pub(crate) uid: String,
+    /// Redis command to execute.
+    pub(crate) command: String,
     /// Guide language (zh / en, defaults to zh).
     #[serde(default)]
     pub(crate) lang: Lang,
@@ -126,11 +133,11 @@ fn field(name: &str, value: &str) -> String {
 
 #[prompt_router]
 impl crate::tools::DbQueryServer {
-    /// Overview guide for the six tools (lang selects the language,
+    /// Overview guide for the seven tools (lang selects the language,
     /// defaulting to zh).
     #[prompt(
         name = "guide",
-        description = "db-query six-tool usage overview: purpose, params, combined flows, errors and limits (lang selects the language)"
+        description = "db-query seven-tool usage overview: purpose, params, combined flows, errors and limits (lang selects the language)"
     )]
     async fn prompt_guide(&self, Parameters(p): Parameters<LangParam>) -> Vec<PromptMessage> {
         let zh = "\
@@ -138,25 +145,37 @@ db-query 只读查询 MCP 使用指引
 ================================
 
 工具链（建议顺序）：
-1. list-connection：列出配置的全部连接（uid / name / description）——入口，不连数据库。
-2. list-database：列出连接可见的数据库（入参 uid）。
-3. list-schema：列出库内 schema，排除系统 schema（入参 uid + database）。
-4. list-table：列出 schema 内表与视图（入参 uid + database + schema，schema 缺省 public）。
-5. describe-table：表结构（入参 uid + database + schema + table）。
-6. execute-sql：校验并执行只读 SQL（入参 uid + database + schema + sql）。
+1. list-connection：列出配置的全部连接（uid / name / description / type）——入口，不连数据库。
+2. list-database：列出连接可见的数据库（入参 uid；redis 连接返回逻辑库清单）。
+3. list-schema：列出库内 schema，排除系统 schema（入参 uid + database；redis 不支持）。
+4. list-table：列出 schema 内表与视图（入参 uid + database + schema，schema 缺省 public；
+   redis 连接映射为 SCAN 分页键清单，cursor 参数往返）。
+5. describe-table：表结构（入参 uid + database + schema + table；redis 连接映射为键探查，
+   table 承载键名）。
+6. execute-sql：校验并执行只读 SQL（入参 uid + database + schema + sql；redis 连接不可用，
+   请改用 execute-redis）。
+7. execute-redis：校验并执行只读 Redis 命令（入参 uid + command；仅限 redis 连接）。
 
-组合流程：list-connection 找 uid → list-database 选库 → list-schema 定位 schema →
+组合流程（SQL 库）：list-connection 找 uid → list-database 选库 → list-schema 定位 schema →
 list-table 找表 → describe-table 看结构与注释 → execute-sql 查询数据。
+
+组合流程（Redis）：list-connection 找 redis 连接 uid → list-database 看逻辑库 →
+list-table 分页浏览键（cursor 往返）→ describe-table 探查键元数据 → execute-redis 查询数据。
 
 异常与限制：
 - uid 不存在：返回错误并列出可用 uid 清单（available）。
-- 行数上限：execute-sql 的用户查询最多 100 行，超出整批报错（不返回部分结果）；
-  元数据工具（list-table 等）不受此限制。
-- 只读白名单：execute-sql 仅允许 SELECT / EXPLAIN / SHOW / 元数据查询；
-  DML / DDL / 事务 / COPY / 锁子句一律拒绝，返回 denials 结构（逐条列出拒绝原因）。
+- 行数上限：execute-sql / execute-redis 的用户查询最多 100 行，超出整批报错
+  （不返回部分结果）；元数据工具不受此限制。
+- 只读白名单（SQL）：execute-sql 仅允许 SELECT / EXPLAIN / SHOW / 元数据查询；
+  DML / DDL / 事务 / COPY / 锁子句一律拒绝，返回 denials 结构。
+- 只读白名单（Redis）：execute-redis 仅允许白名单内只读命令（键 / 字符串 / 哈希 /
+  列表 / 集合 / 有序集合 / 位图 / 地理 / 流 / SCAN / INFO 等）；写 / 过期 / 删除 /
+  事务 / 脚本 / 发布订阅 / 管理命令一律拒绝，返回同构 denials 结构。
+- SCAN 游标：execute-redis 的 SCAN 族结果含 cursor 字段（\"0\" 表示迭代完结）；
+  list-table 的 redis 分页经 cursor 参数往返。
 - 分区表语义：list-table 中分区父表标注 PARTITIONED TABLE，分区子表不单列。
-- 注释：describe-table 输出 table_comment（表注释）与 columns[].comment（列注释），
-  DDL 顶部以「-- 表注释」内联；无注释时对应字段为 null。
+- 注释：describe-table 输出 table_comment 与 columns[].comment；redis 连接输出键元数据
+  （type / ttl / encoding / memory 等，不存在键 exists=false）。
 - ddl_error：describe-table 的 DDL 拼装失败时列元数据仍返回，错误置于 ddl_error 字段。
 
 连接敏感信息（密码、主机、端口）不会出现在任何输出中。";
@@ -165,26 +184,40 @@ db-query read-only SQL MCP Usage Guide
 ======================================
 
 Tool chain (recommended order):
-1. list-connection: list configured connections (uid / name / description) - entry point, no database access.
-2. list-database: list databases visible to the connection (params: uid).
-3. list-schema: list schemas in a database, system schemas excluded (params: uid + database).
-4. list-table: list tables and views in a schema (params: uid + database + schema; schema defaults to public).
-5. describe-table: table structure (params: uid + database + schema + table).
-6. execute-sql: validate then execute read-only SQL (params: uid + database + schema + sql).
+1. list-connection: list configured connections (uid / name / description / type) - entry point, no database access.
+2. list-database: list databases visible to the connection (params: uid; redis connections return logical databases).
+3. list-schema: list schemas in a database, system schemas excluded (params: uid + database; not supported for redis).
+4. list-table: list tables and views in a schema (params: uid + database + schema, schema defaults to public;
+   redis connections map to a paginated key list via SCAN with a round-trip cursor parameter).
+5. describe-table: table structure (params: uid + database + schema + table; redis connections map to key
+   inspection with the table parameter carrying the key name).
+6. execute-sql: validate then execute read-only SQL (params: uid + database + schema + sql; not applicable to
+   redis connections - use execute-redis instead).
+7. execute-redis: validate then execute a read-only Redis command (params: uid + command; redis connections only).
 
-Typical flow: list-connection to find uid -> list-database to pick a database ->
+Typical flow (SQL databases): list-connection to find uid -> list-database to pick a database ->
 list-schema -> list-table -> describe-table for structure and comments -> execute-sql for data.
+
+Typical flow (Redis): list-connection to find a redis uid -> list-database for logical databases ->
+list-table to browse keys page by page (cursor round-trip) -> describe-table for key metadata ->
+execute-redis for data.
 
 Exceptions and limits:
 - Unknown uid: the error response includes the available uid list.
-- Row limit: execute-sql user queries are capped at 100 rows; exceeding fails the whole
-  batch (no partial results). Metadata tools (list-table, etc.) are not affected.
-- Read-only whitelist: execute-sql allows SELECT / EXPLAIN / SHOW / metadata queries only;
+- Row limit: execute-sql / execute-redis user queries are capped at 100 rows; exceeding fails the
+  whole batch (no partial results). Metadata tools are not affected.
+- Read-only whitelist (SQL): execute-sql allows SELECT / EXPLAIN / SHOW / metadata queries only;
   DML / DDL / transactions / COPY / locking clauses are rejected with a denials structure.
+- Read-only whitelist (Redis): execute-redis allows whitelisted read-only commands only
+  (keys / strings / hashes / lists / sets / sorted sets / bitmaps / geo / streams / SCAN / INFO, ...);
+  writes / expiry / deletion / transactions / scripts / pub-sub / admin commands are rejected with
+  an isomorphic denials structure.
+- SCAN cursor: SCAN-family results of execute-redis include a cursor field (\"0\" means iteration
+  complete); list-table pagination for redis round-trips via the cursor parameter.
 - Partition semantics: partitioned parents are marked PARTITIONED TABLE in list-table;
   partition children are not listed separately.
-- Comments: describe-table returns table_comment and columns[].comment; the DDL is
-  prefixed with '-- <table comment>' when present; null when absent.
+- Comments: describe-table returns table_comment and columns[].comment; redis connections return
+  key metadata (type / ttl / encoding / memory, ...) with exists=false for missing keys.
 - ddl_error: if DDL assembly fails in describe-table, column metadata is still returned
   and the error is exposed via the ddl_error field.
 
@@ -197,7 +230,10 @@ Connection secrets (password, host, port) never appear in any output.";
         name = "list-connection",
         description = "Usage guide: list configured database connections (lang selects the language)"
     )]
-    async fn prompt_list_connection(&self, Parameters(p): Parameters<LangParam>) -> Vec<PromptMessage> {
+    async fn prompt_list_connection(
+        &self,
+        Parameters(p): Parameters<LangParam>,
+    ) -> Vec<PromptMessage> {
         let zh = "\
 工具 list-connection 使用指引
 ========================
@@ -238,6 +274,9 @@ Next step: once you have a uid, call list-database to see available databases.";
 ============================
 用途：列出指定连接实例上可见、可连接的数据库（基于 pg_database，排除模板库）。
 
+Redis 连接：返回逻辑库清单（基于 INFO keyspace）——每项含 name（dbN 形态）/
+keys / expires / current（是否配置默认逻辑库）；仅列出有键的逻辑库。
+
 参数：
 - {uid}
 
@@ -256,6 +295,10 @@ Prompt for tool list-database
 =============================
 Purpose: list visible and connectable databases on the connection's instance
 (based on pg_database, template databases excluded).
+
+Redis connections: returns the logical database list (based on INFO keyspace) -
+each item has name (dbN form) / keys / expires / current (whether it is the
+configured default logical database); only logical databases with keys appear.
 
 Params:
 - {uid}
@@ -288,6 +331,9 @@ Next step: pick a database, then call list-schema.",
 ==========================
 用途：列出目标库中的全部 schema（排除 pg_* 系统 schema 与 information_schema）。
 
+Redis 连接：不支持——返回明确错误（Redis 无 schema 概念，请改用 list-database
+查看逻辑库）。
+
 参数：
 - {uid}
 - {db}
@@ -308,6 +354,9 @@ Prompt for tool list-schema
 ===========================
 Purpose: list all schemas in the target database (pg_* system schemas and
 information_schema excluded).
+
+Redis connections: not supported - an explicit error is returned (redis has no
+schema concept; use list-database for logical databases).
 
 Params:
 - {uid}
@@ -353,6 +402,10 @@ PARTITIONED TABLE / VIEW / FOREIGN TABLE。
 分区语义：分区父表标注 PARTITIONED TABLE；分区子表（如 *_p20260101、
 *_default）不单独列出——它们是父表的数据分片，请对父表查询。
 
+Redis 连接：映射为 SCAN 分页键清单——tables 数组每项含 name（键名）；
+输出含 cursor 字段（服务端游标文本，\"0\" 表示迭代完结），下一页将其作为
+cursor 参数传入；schema 参数仅接受缺省 public。
+
 常见异常：
 - uid 不存在：错误响应携带 available 清单。
 - database/schema 不存在或无权限：英文错误（不含密码）。
@@ -379,6 +432,11 @@ BASE TABLE / PARTITIONED TABLE / VIEW / FOREIGN TABLE.
 Partition semantics: partitioned parents are marked PARTITIONED TABLE; partition
 children (e.g. *_p20260101, *_default) are NOT listed separately - they are data
 shards of the parent, query the parent instead.
+
+Redis connections: mapped to a paginated key list via SCAN - each tables item has
+name (the key); the output includes a cursor field (server cursor text, \"0\" means
+iteration complete); pass it back as the cursor parameter for the next page; the
+schema parameter only accepts the default public.
 
 Common errors:
 - Unknown uid: the error includes an available list.
@@ -422,6 +480,11 @@ Next step: call describe-table on the target table for structure and comments.",
   nullable / comment（string 或 null）。
 - ddl_error：仅当 DDL 拼装失败时出现；此时列元数据仍正常返回。
 
+Redis 连接：映射为键探查（table 承载键名）——输出 key / exists / type /
+ttl_seconds / ttl_milliseconds / encoding / refcount / idle_time_seconds /
+memory_bytes；不存在键 exists=false 且 type=none、TTL 为 -2、其余字段 null；
+schema 参数仅接受缺省 public。
+
 常见异常：
 - 表不存在：错误信息指明 schema 与表名。
 - 分区父表：DDL 为父表定义，不含 PARTITION BY 子句（按既有契约）。
@@ -452,6 +515,12 @@ Output contract:
 - columns: an array of name / data_type (full type such as character varying(32)) /
   nullable / comment (string or null).
 - ddl_error: present only when DDL assembly fails; column metadata is still returned.
+
+Redis connections: mapped to key inspection (the table parameter carries the key
+name) - output is key / exists / type / ttl_seconds / ttl_milliseconds / encoding /
+refcount / idle_time_seconds / memory_bytes; a missing key yields exists=false with
+type=none, TTL -2 and null for the remaining fields; the schema parameter only
+accepts the default public.
 
 Common errors:
 - Table not found: the error names the schema and table.
@@ -544,6 +613,97 @@ select columns explicitly on wide tables.",
             db = field("target database", &p.database),
             schema = field("PG schema", &p.schema),
             sql = field("SQL to execute", &p.sql)
+        );
+        localized(p.lang, zh, en)
+    }
+
+    /// Prompt for execute-redis (uid + command).
+    #[prompt(
+        name = "execute-redis",
+        description = "Usage guide: read-only Redis command validation and execution, whitelist and cursor (lang selects the language)"
+    )]
+    async fn prompt_execute_redis(
+        &self,
+        Parameters(p): Parameters<RedisLangParam>,
+    ) -> Vec<PromptMessage> {
+        let zh = format!(
+            "\
+工具 execute-redis 使用指引
+===========================
+用途：先经只读白名单校验，再在 Redis 连接上执行命令并返回结构化结果
+（文本化单元格，与 execute-sql 输出同构）。
+
+参数：
+- {uid}
+- {command}
+
+只读白名单：仅允许白名单内只读命令——键（TYPE / TTL / EXISTS / ...）、字符串
+（GET / STRLEN / MGET / ...）、哈希（HGET / HGETALL / HSCAN / ...）、列表、集合、
+有序集合、位图、地理、流、SCAN 族、OBJECT / MEMORY、INFO / DBSIZE / PING 等；
+写（SET / DEL / ...）、过期、事务、脚本（EVAL）、发布订阅、管理命令一律拒绝。
+拒绝响应为 denials 数组：逐条给出序号、违规类别与原因（含完整命令原文），
+命令不会执行。
+
+单命令：一次一条命令（多命令 / 分号 / 换行整体拒绝）；引号可包裹含空格参数。
+
+保护：结果最多 100 行 / 10MB，超出整批报错；单命令 30 秒超时。
+
+输出结构：columns（列名）+ rows（单元格为 {{text, is_null}}）；SCAN 族另含
+cursor 字段（服务端游标文本，\"0\" 表示迭代完结，非 0 时继续迭代）。
+
+常见异常：
+- uid 不存在：错误响应携带 available 清单。
+- 连接非 redis 类型：错误指明实际类型。
+- 校验拒绝：见 denials。
+- 服务端错误（如 WRONGTYPE）：英文透传（含连接标识，不含凭据）。
+
+衔接建议：先用 list-table 分页浏览键、describe-table 探查键元数据，再取值；
+大集合用 SCAN / HSCAN 分页（COUNT 已受白名单约束）。",
+            uid = field("目标连接 uid", &p.uid),
+            command = field("待执行 Redis 命令", &p.command)
+        );
+        let en = format!(
+            "\
+Prompt for tool execute-redis
+=============================
+Purpose: validate the command against the read-only whitelist first, then execute
+it on the Redis connection and return structured results (text-rendered cells,
+isomorphic with execute-sql output).
+
+Params:
+- {uid}
+- {command}
+
+Read-only whitelist: only whitelisted read-only commands are allowed - keys
+(TYPE / TTL / EXISTS, ...), strings (GET / STRLEN / MGET, ...), hashes
+(HGET / HGETALL / HSCAN, ...), lists, sets, sorted sets, bitmaps, geo, streams,
+the SCAN family, OBJECT / MEMORY, INFO / DBSIZE / PING, ...; writes (SET / DEL, ...),
+expiry, transactions, scripts (EVAL), pub-sub and admin commands are always
+rejected. The rejection response is a denials array listing index, violation
+category and reason (with the full original command); the command is not executed.
+
+Single command: one command per call (multi-command input, semicolons and newlines
+are rejected as a whole); quotes may wrap arguments containing spaces.
+
+Limits: at most 100 rows / 10MB; exceeding fails the whole batch; 30s timeout
+per command.
+
+Output: columns (names) + rows (cells as {{text, is_null}}); the SCAN family
+additionally includes a cursor field (server cursor text, \"0\" means iteration
+complete, keep iterating while non-zero).
+
+Common errors:
+- Unknown uid: the error includes an available list.
+- Non-redis connection: the error names the actual type.
+- Validation denial: see denials.
+- Server errors (e.g. WRONGTYPE): passed through in English (connection identity
+  included, never credentials).
+
+Next step: browse keys with list-table and inspect key metadata with
+describe-table before fetching values; page large collections with SCAN / HSCAN
+(COUNT is already constrained by the whitelist).",
+            uid = field("target connection uid", &p.uid),
+            command = field("Redis command to execute", &p.command)
         );
         localized(p.lang, zh, en)
     }

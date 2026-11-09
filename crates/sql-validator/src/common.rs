@@ -35,17 +35,17 @@ pub enum StatementKind {
     Show,
     /// DESC / DESCRIBE table-structure viewing.
     Describe,
-    /// INSERT / UPDATE / DELETE / MERGE。
+    /// INSERT / UPDATE / DELETE / MERGE.
     Dml,
     /// CREATE / ALTER / DROP / TRUNCATE family.
     Ddl,
-    /// BEGIN / COMMIT / ROLLBACK / SAVEPOINT。
+    /// BEGIN / COMMIT / ROLLBACK / SAVEPOINT.
     Transaction,
-    /// GRANT / REVOKE。
+    /// GRANT / REVOKE.
     Privilege,
-    /// SET / USE。
+    /// SET / USE.
     Session,
-    /// CALL。
+    /// CALL.
     ProcedureCall,
     /// COPY (including the LOAD DATA file channel).
     Copy,

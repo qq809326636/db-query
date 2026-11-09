@@ -1,4 +1,3 @@
-//! sql command group: validate (purely local validation) / exec (validate then
 //! execute).
 
 use clap::Args as ClapArgs;
@@ -105,7 +104,6 @@ fn locate(
 
 /// Build the validation policy from config; on load or build failure fall back
 /// to the built-in policy (local validation commands must not be blocked by a
-/// broken policy section; the error goes to stderr as a warning).
 fn load_policy(config_path: &std::path::Path) -> excapp_db_sql_validator::Policy {
     match AppConfig::load(config_path) {
         Ok(config) => match build_policy_from(&config) {
@@ -121,7 +119,6 @@ fn load_policy(config_path: &std::path::Path) -> excapp_db_sql_validator::Policy
         }
     }
 }
-
 /// Config → policy (same assembly semantics as sql-mcp; kinds subsetting +
 /// three-dialect appends).
 fn build_policy_from(
@@ -223,7 +220,6 @@ fn render_json(result: &excapp_db_sql_executor::QueryResult) -> String {
 }
 
 /// Table rendering: two-space separated, adaptive column widths, cells over 60
-/// chars truncated with an ellipsis, NULL uppercased.
 fn render_table(result: &excapp_db_sql_executor::QueryResult) {
     const MAX_CELL: usize = 60;
     let cell = |text: &str, is_null: bool| -> String {
@@ -286,6 +282,7 @@ mod tests {
                 vec![CellValue::text("1"), CellValue::text("alice")],
                 vec![CellValue::text("2"), CellValue::null()],
             ],
+            cursor: None,
         }
     }
 
@@ -301,13 +298,13 @@ mod tests {
     #[test]
     fn test_table_render_null_and_alignment() {
         // Rendering without panicking is the baseline; assert the NULL flag and
-        // the empty-result hint.
         let result = sample_result();
         render_table(&result); // stdout output (visible in test environments)
 
         let empty = QueryResult {
             columns: vec!["x".into()],
             rows: vec![],
+            cursor: None,
         };
         render_table(&empty);
     }
@@ -318,6 +315,7 @@ mod tests {
         let result = QueryResult {
             columns: vec!["c".into()],
             rows: vec![vec![CellValue::text(long)]],
+            cursor: None,
         };
         render_table(&result);
     }

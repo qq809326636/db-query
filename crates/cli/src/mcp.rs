@@ -1,4 +1,3 @@
-//! mcp command group: start (foreground start + pid management) / stop
 //! (SIGTERM shutdown).
 
 use clap::Args as ClapArgs;
@@ -15,7 +14,6 @@ pub struct McpArgs {
 #[derive(Debug, clap::Subcommand)]
 enum McpCommand {
     /// Start the MCP server in the foreground (streamable mode writes a
-    /// pid file).
     Start {
         /// Transport mode.
         #[arg(long, value_enum, default_value_t = Transport::Stdio)]
@@ -23,7 +21,6 @@ enum McpCommand {
         /// Config file path.
         #[arg(long, default_value = "config.toml")]
         config: PathBuf,
-        /// Pid file path (defaults to excapp-db.pid under the system temp
         /// dir).
         #[arg(long)]
         pidfile: Option<PathBuf>,
@@ -66,7 +63,6 @@ fn start(transport: Transport, config: &std::path::Path, pidfile: Option<PathBuf
     let pid_path = pidfile.unwrap_or_else(default_pidfile);
 
     // streamable: pid management (pre-write + rollback on failure; stale
-    // detection).
     let pid_guard = if transport == Transport::Streamable {
         match check_existing_pid(&pid_path) {
             Ok(()) => {}
@@ -82,7 +78,7 @@ fn start(transport: Transport, config: &std::path::Path, pidfile: Option<PathBuf
         Some(PidGuard { path: pid_path })
     } else {
         None // stdio mode writes no pid (the local client manages the
-             // process).
+        // process).
     };
 
     let code = match transport {
@@ -94,7 +90,6 @@ fn start(transport: Transport, config: &std::path::Path, pidfile: Option<PathBuf
             let runtime = tokio::runtime::Runtime::new().expect("failed to build tokio runtime");
             let code = runtime.block_on(excapp_db_sql_mcp::run_streamable(config));
             // Failure rollback: clean up the pre-written pid file on
-            // non-zero exit.
             if code != 0
                 && let Some(guard) = &pid_guard
             {
@@ -105,7 +100,6 @@ fn start(transport: Transport, config: &std::path::Path, pidfile: Option<PathBuf
     };
 
     // Normal exit (including graceful SIGTERM exit): clean up the pid
-    // file.
     if code == 0
         && let Some(guard) = &pid_guard
     {
@@ -128,11 +122,9 @@ impl PidGuard {
 impl Drop for PidGuard {
     fn drop(&mut self) {
         // Last-resort cleanup: explicit remove already handles the
-        // normal/failure paths; this is a defensive fallback.
         let _ = std::fs::remove_file(&self.path);
     }
 }
-
 /// Check the pid file: a live instance is rejected (returns an exit
 /// code); a stale one is overwritten and startup continues.
 fn check_existing_pid(path: &std::path::Path) -> Result<(), i32> {
@@ -209,7 +201,6 @@ fn stop(pidfile: Option<PathBuf>) -> i32 {
 }
 
 /// kill(pid, 0) zero-signal liveness probe: true means the process
-/// exists.
 fn is_alive(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
 }
