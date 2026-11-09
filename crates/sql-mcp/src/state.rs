@@ -1,4 +1,3 @@
-//! Shared state of the executor set: uid addressing, atomic swap on hot reload.
 //!
 //! The read path (tool calls fetching executors by uid) is lock-free: arc-swap's
 //! `load` yields a snapshot reference; the write path (config hot reload)
@@ -39,7 +38,6 @@ pub struct ExecutorSet {
 }
 
 impl ExecutorSet {
-    /// Build the whole set from config.
     ///
     /// An unsupported `db_type` on any database fails the whole set (fail fast,
     /// error carrying the database name); unreachable connections do not error
@@ -64,8 +62,6 @@ impl ExecutorSet {
             connections,
         })
     }
-
-    /// Build the validation policy from config (kinds subsetting + function
     /// blacklist appends).
     ///
     /// The config already passed core's startup validation; the value-domain /
@@ -131,7 +127,6 @@ impl ExecutorSet {
 pub struct SharedState {
     set: std::sync::Arc<arc_swap::ArcSwap<ExecutorSet>>,
     /// The validation policy (swapped wholesale on hot reload; the old policy is
-    /// kept on failure).
     policy: std::sync::Arc<arc_swap::ArcSwap<Policy>>,
 }
 
@@ -214,12 +209,13 @@ mod tests {
     #[tokio::test]
     async fn test_build_fails_on_unsupported_db_type() {
         // mysql / sqlite are supported; redis is still a fail-closed unsupported type.
+        // is still a fail-closed unsupported type.
         let text = "[[databases]]\nuid = \"u1\"\nname = \"One\"\ndescription = \"d\"\n\
-                    type = \"redis\"\ndialect = \"postgres\"\nusername = \"t\"\npassword = \"t\"\n\
-                    host = \"localhost\"\nport = 6379\ndb = \"app\"\n";
+                    type = \"mongodb\"\ndialect = \"postgres\"\nusername = \"t\"\npassword = \"t\"\n\
+                    host = \"localhost\"\nport = 27017\ndb = \"app\"\n";
         let config = excapp_db_core::config::AppConfig::parse(text).unwrap();
         let err = ExecutorSet::build(&config).unwrap_err();
-        assert!(err.contains("redis") && err.contains("One"), "{err}");
+        assert!(err.contains("mongodb") && err.contains("One"), "{err}");
     }
 
     #[tokio::test]

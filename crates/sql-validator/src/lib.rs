@@ -1,14 +1,3 @@
-//! SQL syntax validation library: only read-only SELECT / EXPLAIN / SHOW /
-//! metadata-viewing statements are allowed.
-//!
-//! As db-query's read-only security layer, any SQL must pass [`validate`] before
-//! reaching database execution. Validation is based on sqlparser parsing
-//! (AST-level verdicts), not keyword matching:
-//!
-//! - Allowed: pure queries (including CTEs / set operations / VALUES /
-//!   subqueries), EXPLAIN whose inner statement is whitelisted (including
-//!   ANALYZE), SHOW and DESC-style metadata viewing (sqlite includes read-only
-//!   PRAGMAs);
 //! - Denied: all DML / DDL / transaction-control / privilege-and-session
 //!   statements, COPY (including `TO STDOUT` and MySQL's `LOAD DATA`), queries
 //!   with locking clauses (`FOR UPDATE` / `FOR SHARE`, etc.), sqlite's
@@ -51,10 +40,14 @@ mod common;
 mod error;
 mod mysql;
 mod pg;
+mod redis;
 mod sqlite;
 
 pub use common::{Policy, PolicyBuilder, StatementKind};
 pub use error::{Denial, RejectCategory, ValidationResult};
+pub use redis::{
+    RedisCommand, RedisDenial, RedisRejectCategory, RedisValidationResult, validate_redis,
+};
 
 use error::BatchError;
 use sqlparser::ast::Statement;
@@ -66,16 +59,9 @@ use sqlparser::ast::Statement;
 /// ([`Policy::default`]).
 ///
 /// - `dialect` is case-insensitive with surrounding whitespace ignored;
-///   `postgres` / `mysql` / `sqlite` are supported.
-/// - The return value is always a structured [`ValidationResult`]: denial is a
-///   normal business outcome, not an exception; each denial carries a
-///   machine-readable category and an English explanation (full statement
-///   text, never truncated).
 pub fn validate(dialect: &str, sql: &str) -> ValidationResult {
     validate_with_policy(dialect, sql, &Policy::default())
 }
-
-/// Validate SQL (policy entry): tightens allow kinds / appends function
 /// blacklists per `policy`.
 ///
 /// The assembly layers (sql-mcp / cli) build a [`Policy`] from config and
@@ -156,7 +142,6 @@ mod tests {
         // sqlite: read-only PRAGMAs allowed, write-shaped ones denied.
         assert!(validate("sqlite", "PRAGMA table_info('t')").allowed);
         // The keyword-value form (= WAL) lands in ParseError; the numeric
-        // assignment form is denied under the Pragma category.
         assert_eq!(
             validate("sqlite", "PRAGMA journal_mode = WAL").denials[0].category,
             RejectCategory::ParseError
@@ -168,7 +153,6 @@ mod tests {
 
     #[test]
     fn test_validate_with_policy_restricts_kinds() {
-        // After tightening EXPLAIN: EXPLAIN is denied (PolicyRestricted), SELECT
         // is unaffected.
         let policy = Policy::builder()
             .allow_kinds(&[
@@ -192,7 +176,6 @@ mod tests {
     #[test]
     fn test_validate_with_policy_appends_function_blacklist() {
         // Appended entries apply per dialect: after pg appends my_func it hits;
-        // the sqlite path is unaffected.
         let policy = Policy::builder()
             .extend_fn_blacklist("postgres", ["my_func"])
             .unwrap()
@@ -205,7 +188,6 @@ mod tests {
         assert!(validate_with_policy("sqlite", "SELECT my_func(1)", &policy).allowed);
 
         // Built-in entries cannot be removed by policy (no removal API; still
-        // denied by default).
         assert!(!validate("postgres", "SELECT pg_advisory_lock(1)").allowed);
     }
 }
