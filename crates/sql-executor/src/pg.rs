@@ -6,12 +6,12 @@
 //! [`HealthCheck`] trait.
 
 mod connection;
+mod execute;
 mod health;
-mod query;
 
 pub use connection::PgPool;
+pub use execute::PgExecutor;
 pub use health::PgHealthCheck;
-pub use query::PgExecutor;
 
 #[cfg(test)]
 use excapp_db_core::config::DatabaseConfig;

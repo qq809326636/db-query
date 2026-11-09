@@ -8,12 +8,12 @@
 //! [`HealthCheck`] trait.
 
 mod connection;
+mod execute;
 mod health;
-mod query;
 
 pub use connection::SqlitePool;
+pub use execute::SqliteExecutor;
 pub use health::SqliteHealthCheck;
-pub use query::SqliteExecutor;
 
 use std::time::Duration;
 

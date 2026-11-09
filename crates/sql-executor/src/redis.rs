@@ -10,12 +10,12 @@
 //! validated by CommandWhitelist**; this module does not re-run whitelist checks.
 
 mod connection;
+mod execute;
 mod health;
-mod query;
 
 pub use connection::RedisPool;
+pub use execute::RedisExecutor;
 pub use health::RedisHealthCheck;
-pub use query::RedisExecutor;
 
 use std::time::Duration;
 

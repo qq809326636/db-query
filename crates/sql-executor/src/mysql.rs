@@ -7,12 +7,12 @@
 //! health check implements core's [`HealthCheck`] trait.
 
 mod connection;
+mod execute;
 mod health;
-mod query;
 
 pub use connection::MyPool;
+pub use execute::MyExecutor;
 pub use health::MyHealthCheck;
-pub use query::MyExecutor;
 
 #[cfg(test)]
 use excapp_db_core::config::DatabaseConfig;
