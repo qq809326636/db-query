@@ -2,7 +2,7 @@ English | [简体中文](README.zh.md)
 
 # DB Query MCP
 
-A read-only database query MCP server built in Rust: configure multiple databases and only allow SELECT statements that pass syntax validation.
+A read-only database query MCP server built in Rust: configure multiple databases and only allow read-only queries (SQL SELECT statements and Redis read-only commands).
 
 ## Table of Contents
 
@@ -24,7 +24,7 @@ DB Query MCP is a database MCP (Model Context Protocol) server written in Rust t
 
 ## Features
 
-- 🔌 Multiple databases: PostgreSQL, MySQL, and SQLite (delivered), with Redis on the roadmap
+- 🔌 Multiple databases: PostgreSQL, MySQL, SQLite, and Redis (delivered)
 - ⚙️ Multi-instance configuration: configure multiple database connections via `config.toml` and switch query targets by name
 - 🛡️ Read-only safety: SQL passes syntax validation first; only SELECT-style statements are allowed, everything else is rejected
 - 🧩 Modular layering: syntax validation, database adapters, and the MCP server live in separate crates for easy extension
@@ -88,7 +88,7 @@ SELECT count(*) FROM orders WHERE created_at >= current_date;
 
 ### MCP Tools
 
-The service provides six tools, addressing query targets by `uid`; chaining them in order is recommended:
+The service provides seven tools, addressing query targets by `uid`; chaining them in order is recommended:
 
 | Tool | Purpose | Key inputs |
 |------|---------|------------|
@@ -99,7 +99,7 @@ The service provides six tools, addressing query targets by `uid`; chaining them
 | `describe-table` | Table structure, DDL and comments | `uid` + `database` + `schema` (optional) + `table` |
 | `execute-sql` | Validate and execute read-only SQL (row / byte / timeout triple protection) | `uid` + `database` + `schema` (optional) + `sql` |
 
-Typical flow: `list-connection` to find the uid → `list-database` to pick a database → `list-schema` to locate the schema → `list-table` to find tables → `describe-table` to inspect the structure → `execute-sql` to query data. There is also a guide prompt plus six tool-matching usage prompts (the `lang` parameter selects zh / en).
+Typical flow: `list-connection` to find the uid → `list-database` to pick a database → `list-schema` to locate the schema → `list-table` to find tables → `describe-table` to inspect the structure → `execute-sql` to query data. There is also a guide prompt plus seven tool-matching usage prompts (the `lang` parameter selects zh / en).
 
 ## Configuration
 
@@ -155,7 +155,7 @@ A multi-crate workspace layered by responsibility:
 ├── crates/
 │   ├── cli/               # CLI tool (binary name excapp-db): conf / mcp / sql
 │   ├── core/              # shared infrastructure: config loading, state storage (AppState)
-│   ├── sql-mcp/           # MCP server library (lib), six tools + stdio and Streamable HTTP transports
+│   ├── sql-mcp/           # MCP server library (lib), seven tools + stdio and Streamable HTTP transports
 │   ├── sql-validator/     # SQL syntax validation library, only read-only queries pass
 │   └── sql-executor/      # database connection and query execution library, read-only query execution per database
 ├── deps/                  # test-dependency database orchestration (docker compose: PG18 / MySQL8 / Redis8)
@@ -205,7 +205,7 @@ python3 run.py                # all active cases (dual target databases)
 - [x] Support PostgreSQL with read-only queries and SQL syntax validation (first milestone)
 - [x] Support MySQL queries (v0.2.0)
 - [x] Support SQLite queries (v0.2.0)
-- [ ] Support Redis queries
+- [x] Support read-only Redis command queries (execute-redis + metadata mapping)
 
 For more ideas, see [Issues](https://github.com/qq809326636/db-query/issues).
 

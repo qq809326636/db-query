@@ -1,4 +1,3 @@
-//! `SqliteExecutor`: query execution (Batch per-statement, dynamic-type
 //! stringification, triple protection).
 
 use super::{PROGRESS_HANDLER_OPS, QUERY_TIMEOUT_SECS, RESULT_BYTE_LIMIT, ROW_LIMIT, SqliteError};
@@ -9,7 +8,6 @@ use rusqlite::types::ValueRef;
 use std::time::{Duration, Instant};
 
 /// SQLite query executor: holds the read-only connection pool and implements the
-/// unified execution entry.
 pub struct SqliteExecutor {
     /// Shared connection pool (shared with the health check).
     pool: std::sync::Arc<super::SqlitePool>,
@@ -25,7 +23,6 @@ impl std::fmt::Debug for SqliteExecutor {
 
 impl SqliteExecutor {
     /// Create the executor from config (builds the pool; invalid `extra_opts`
-    /// errors at pool-build time).
     pub fn new(config: &excapp_db_core::config::DatabaseConfig) -> Result<Self, SqliteError> {
         Ok(Self {
             pool: std::sync::Arc::new(super::SqlitePool::new(config)?),
@@ -40,11 +37,6 @@ impl SqliteExecutor {
     /// - Over 100 rows or over 10MB of total text bytes fails the whole batch,
     ///   never returning partial results;
     /// - A statement running past 30 seconds is interrupted via the progress
-    ///   callback and surfaces a timeout error;
-    /// - Out-of-bounds write statements are denied by the read-only connection,
-    ///   passing through the database's raw error;
-    /// - The SQL is assumed to be already validated by the caller via
-    ///   sql-validator.
     pub async fn execute(&self, sql: &str) -> Result<QueryResult, SqliteError> {
         self.run(sql, true).await
     }
@@ -56,11 +48,9 @@ impl SqliteExecutor {
     /// # Security boundary
     ///
     /// Only for metadata queries assembled statically inside caller code;
-    /// **never** for user-supplied SQL (which must go through [`execute`]).
     pub async fn execute_metadata(&self, sql: &str) -> Result<QueryResult, SqliteError> {
         self.run(sql, false).await
     }
-
     /// Execution backbone: acquire a connection → advance statement by statement
     /// inside the blocking closure (with timeout interruption).
     async fn run(&self, sql: &str, enforce_limits: bool) -> Result<QueryResult, SqliteError> {
@@ -95,6 +85,10 @@ impl SqliteExecutor {
     }
 
     /// Derive an executor: SQLite has no schema concept, so the database must
+    pub(crate) fn db_name(&self) -> &str {
+        &self.pool.db_name
+    }
+
     /// equal the main database path (sharing the same pool when equal,
     /// rejected otherwise).
     pub fn for_database_with_schema(
@@ -102,7 +96,6 @@ impl SqliteExecutor {
         database: &str,
         schema: Option<&str>,
     ) -> Result<Self, SqliteError> {
-        // schema not None: SQLite has no equivalent, so it is explicitly rejected
         // (fail closed).
         if let Some(schema) = schema {
             return Err(SqliteError::InvalidExtraOpts {
@@ -125,10 +118,6 @@ impl SqliteExecutor {
         })
     }
 }
-
-/// Execution inside the blocking closure: busy_timeout + deadline progress
-/// callback + per-statement collection.
-///
 /// Timeout mechanism: SQLite has no server-side timeout, and `interact`'s
 /// blocking closure cannot be cancelled from the async side (dropping the
 /// future does not stop the blocking thread; the connection would be left in a
@@ -150,7 +139,6 @@ fn execute_sync(
 
     let deadline = Instant::now() + timeout;
     // Mind the polarity: rusqlite's progress callback returning `true` means
-    // **interrupt** the execution.
     conn.progress_handler(
         PROGRESS_HANDLER_OPS,
         Some(move || Instant::now() >= deadline),
@@ -160,13 +148,10 @@ fn execute_sync(
     let result = collect(conn, sql, enforce_limits, db_name);
 
     // Clear the progress callback: a connection returned to the pool must not
-    // keep this query's deadline.
     let _ = conn.progress_handler(0, None::<fn() -> bool>);
 
     result.map_err(|e| map_interrupted(e, db_name))
 }
-
-/// Advance statement by statement and collect results (taking the last statement
 /// group that has a result set).
 ///
 /// Column names are available at prepare time (`column_names`), so **empty
@@ -238,7 +223,6 @@ fn collect(
 
         // Statements with column definitions (including empty result sets)
         // override the final result; statements without definitions (e.g. PRAGMA
-        // with no output) do not participate.
         if !stmt_columns.is_empty() {
             columns = stmt_columns;
             result_rows = stmt_rows;
@@ -248,9 +232,9 @@ fn collect(
     Ok(QueryResult {
         columns,
         rows: result_rows,
+        cursor: None,
     })
 }
-
 /// Value stringification: rendered per the **actual stored type** (dynamic-type
 /// semantics).
 fn cell_value(value: ValueRef<'_>) -> CellValue {
@@ -307,7 +291,6 @@ mod tests {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
         format!("/tmp/excapp-db-sqlite-{tag}-{}-{n}.db", std::process::id())
     }
-
     /// Create the database via the write channel and load sample data (test
     /// fixtures only).
     fn write_fixture(path: &str, ddl: &str) {
@@ -391,7 +374,6 @@ mod tests {
     async fn test_execute_dynamic_type_numeric_affinity() -> anyhow::Result<()> {
         let path = unique_db_path("affinity");
         // A NUMERIC-affinity column storing the text '123' → rendered per its
-        // INTEGER storage.
         write_fixture(
             &path,
             "CREATE TABLE num (v NUMERIC); INSERT INTO num VALUES ('123');",
@@ -408,7 +390,6 @@ mod tests {
         let path = unique_db_path("readonly");
         write_fixture(&path, "CREATE TABLE t (v INTEGER);");
         let exec = SqliteExecutor::new(&config_with_path(&path))?;
-        // Out-of-bounds write statement (reaching here without validation):
         // denied by the read-only connection, error passed through.
         let err = exec.execute("INSERT INTO t VALUES (3)").await.unwrap_err();
         let msg = err.to_string();

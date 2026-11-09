@@ -1,5 +1,3 @@
-//! SQLite implementation: read-only connections (`SqlitePool`), query execution
-//! (`SqliteExecutor`) and health check (`SqliteHealthCheck`).
 //!
 //! Built on rusqlite + deadpool-sqlite (per-database native drivers, per the
 //! overall design revision #2): the connection layer enforces a read-only hard
@@ -20,10 +18,8 @@ pub use query::SqliteExecutor;
 use std::time::Duration;
 
 /// sqlite implementation-layer errors: structured English, carrying the database
-/// id (uid).
 #[derive(Debug, thiserror::Error)]
 pub enum SqliteError {
-    /// extra_opts failed to parse (not `key=value` pairs, a key outside the
     /// whitelist, or an invalid value).
     #[error(
         "invalid extra_opts for database '{db_name}': expected space-separated key=value pairs with keys from {supported}, got '{raw}'"
@@ -53,7 +49,6 @@ pub enum SqliteError {
         path: String,
     },
     /// The file is readable but is not a valid SQLite database file (driver open
-    /// failure).
     #[error("sqlite file is not a database for '{db_name}': {path}: {detail}")]
     NotADatabase {
         /// Database unique id (uid, error identifier).
@@ -72,7 +67,6 @@ pub enum SqliteError {
         detail: String,
     },
     /// Query execution failed (passing through SQLite's raw semantics, e.g. table
-    /// does not exist, read-only denial).
     #[error("query failed for database '{db_name}': {detail}")]
     Query {
         /// Database unique id (uid, error identifier).
@@ -80,7 +74,6 @@ pub enum SqliteError {
         /// Raw driver error.
         detail: String,
     },
-    /// A single query ran past the limit (30 seconds, interrupted by the progress
     /// callback).
     #[error("query timed out for database '{db_name}': limit is {limit}s")]
     Timeout {
@@ -101,7 +94,6 @@ pub enum SqliteError {
         /// The limit (100).
         limit: usize,
     },
-    /// Result-set text byte total exceeds the limit (user queries only; no
     /// partial results returned).
     #[error(
         "query result exceeds byte limit for database '{db_name}': got {actual} bytes, limit is {limit}"
@@ -126,7 +118,6 @@ pub(crate) const POOL_MAX_SIZE: usize = 10;
 pub(crate) const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Execution timeout ceiling for a single query (seconds): interrupted via the
-/// progress callback so the connection stays clean and reclaimable.
 pub(crate) const QUERY_TIMEOUT_SECS: u64 = 30;
 
 /// Progress-callback check granularity (deadline checked every N VM instructions).
@@ -137,7 +128,6 @@ pub(crate) const PROGRESS_HANDLER_OPS: i32 = 1_000;
 pub(crate) const RESULT_BYTE_LIMIT: usize = 10 * 1024 * 1024;
 
 /// Default busy_timeout (milliseconds): bounded wait when concurrent reads hit
-/// an external writer's lock.
 pub(crate) const BUSY_TIMEOUT_MS: u64 = 5_000;
 
 /// Supported extra_opts keys (whitelist, embedded in the error message).

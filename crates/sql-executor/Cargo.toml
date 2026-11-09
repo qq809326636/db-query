@@ -10,11 +10,13 @@ name = "excapp_db_sql_executor"
 [dependencies]
 deadpool = "0.13"
 deadpool-postgres = "0.14"
+deadpool-redis = "0.23"
 deadpool-sqlite = "0.14"
 excapp-db-core = { path = "../core", package = "core" }
 fallible-iterator = "0.3"
 futures-util = "0.3"
 mysql_async = "0.37"
+redis = { version = "1.8", features = ["tokio-comp"] }
 rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }

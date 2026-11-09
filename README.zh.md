@@ -2,7 +2,7 @@
 
 # 数据查询 MCP
 
-Rust 实现的只读数据库查询 MCP 服务器：支持配置多个数据库，仅放行通过语法校验的 SELECT 查询语句。
+Rust 实现的只读数据库查询 MCP 服务器：支持配置多个数据库，仅放行只读查询（SQL SELECT 与 Redis 只读命令）。
 
 ## 目录
 
@@ -86,7 +86,7 @@ SELECT count(*) FROM orders WHERE created_at >= current_date;
 
 ### MCP 工具
 
-服务提供六个工具，按 `uid` 寻址查询目标，建议按顺序组合使用：
+服务提供七个工具，按 `uid` 寻址查询目标，建议按顺序组合使用：
 
 | 工具 | 作用 | 主要入参 |
 |------|------|----------|
@@ -96,8 +96,9 @@ SELECT count(*) FROM orders WHERE created_at >= current_date;
 | `list-table` | 列出 schema 内表与视图（含分区语义） | `uid` + `database` + `schema`（可选） |
 | `describe-table` | 表结构、DDL 与注释 | `uid` + `database` + `schema`（可选） + `table` |
 | `execute-sql` | 校验并执行只读 SQL（行数 / 字节 / 超时三重保护） | `uid` + `database` + `schema`（可选） + `sql` |
+| `execute-redis` | 校验并执行只读 Redis 命令（白名单 / 三重保护 / SCAN 游标） | `uid` + `command` |
 
-典型流程：`list-connection` 找 uid → `list-database` 选库 → `list-schema` 定位 schema → `list-table` 找表 → `describe-table` 看结构 → `execute-sql` 查询数据。另有 guide 指引 Prompt 与六个工具对应的使用指引 Prompt（`lang` 参数可选 zh / en）。
+典型流程：`list-connection` 找 uid → `list-database` 选库 → `list-schema` 定位 schema → `list-table` 找表 → `describe-table` 看结构 → `execute-sql` 查询数据。另有 guide 指引 Prompt 与七个工具对应的使用指引 Prompt（`lang` 参数可选 zh / en）。
 
 ## 配置
 
@@ -153,7 +154,7 @@ extra_opts = ""
 ├── crates/
 │   ├── cli/               # 命令行工具（binary 名 excapp-db）：conf / mcp / sql
 │   ├── core/              # 共享基础设施：配置加载、状态存储（AppState）
-│   ├── sql-mcp/           # MCP 服务器库（lib），六工具 + stdio 与 Streamable HTTP 传输
+│   ├── sql-mcp/           # MCP 服务器库（lib），七工具 + stdio 与 Streamable HTTP 传输
 │   ├── sql-validator/     # SQL 语法校验库，仅放行只读查询
 │   └── sql-executor/      # 数据库连接与查询执行库，封装各数据库的只读查询执行├── deps/                  # 测试依赖数据库编排（docker compose：PG18 / MySQL8 / Redis8）
 ├── benchmark/             # 非功能基准测试（security 安全压测场景）
@@ -201,7 +202,7 @@ python3 run.py                # 全部生效用例（双目标库）
 - [x] 接入 PostgreSQL，实现只读查询与 SQL 语法校验（首个目标）
 - [x] 支持 MySQL 查询（v0.2.0）
 - [x] 支持 SQLite 查询（v0.2.0）
-- [ ] 支持 Redis 查询
+- [x] 支持 Redis 只读命令查询（execute-redis + 元数据映射）
 
 更多想法见 [Issues](https://github.com/qq809326636/db-query/issues)。
 

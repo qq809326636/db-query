@@ -1,4 +1,3 @@
-//! PostgreSQL implementation: connection pool (PgConnection), query
 //! execution (PgQuery), and health check (PgHealthCheck).
 //!
 //! The pool connects lazily (deadpool, max 10); queries go through the
@@ -20,7 +19,6 @@ use excapp_db_core::config::DatabaseConfig;
 use std::time::Duration;
 
 /// pg implementation-layer error: structured English, includes the
-/// database identity, no credentials.
 #[derive(Debug, thiserror::Error)]
 pub enum PgError {
     /// extra_opts failed to parse (not in `key=value` pair form).
@@ -34,7 +32,6 @@ pub enum PgError {
         raw: String,
     },
     /// Failed to get a connection from the pool (including connection
-    /// setup failures: refused / auth failure / timeout, etc.).
     #[error("postgres connection failed for database '{db_name}': {detail}")]
     Connection {
         /// Database name (error identity).
@@ -42,7 +39,6 @@ pub enum PgError {
         /// Raw driver error (preserving refused / auth-failure semantics).
         detail: String,
     },
-    /// Query execution failed (passes through raw PG semantics, such as
     /// a missing table).
     #[error("query failed for database '{db_name}': {detail}")]
     Query {
@@ -64,7 +60,6 @@ pub enum PgError {
         limit: usize,
     },
     /// Result set text byte total exceeds the limit (user queries only;
-    /// no partial results).
     #[error(
         "query result exceeds byte limit for database '{db_name}': got {actual} bytes, limit is {limit}"
     )]
@@ -83,13 +78,11 @@ pub enum PgError {
 /// up the chain, e.g. "password authentication failed").
 ///
 /// Server error messages vary with locale (English / Chinese), so the
-/// SQLSTATE code (e.g. 28P01, 42P01) is appended for machine readability.
 pub(crate) fn flatten_error(e: &dyn std::error::Error) -> String {
     let mut parts = vec![e.to_string()];
     let mut src = e.source();
     while let Some(s) = src {
         let text = s.to_string();
-        // Skip placeholder text duplicating the upper level (e.g. "db
         // error").
         if !parts.contains(&text) {
             parts.push(text);
@@ -97,7 +90,6 @@ pub(crate) fn flatten_error(e: &dyn std::error::Error) -> String {
         src = s.source();
     }
     let mut joined = parts.join(": ");
-    // DbError's Debug form contains SqlState(...); extracted from the
     // innermost error.
     if let Some(code) = extract_sqlstate(e).filter(|c| !joined.contains(c)) {
         joined.push_str(&format!(" (SQLSTATE {code})"));
@@ -124,18 +116,13 @@ pub(crate) const POOL_MAX_SIZE: usize = 10;
 /// queries like pg_sleep from exhausting the pool.
 ///
 /// Applies to every statement on the connection (including metadata
-/// queries); timeouts are cancelled server-side, SQLSTATE 57014
-/// (query_canceled).
 pub(crate) const STATEMENT_TIMEOUT: &str = "30s";
 
 /// Byte-total limit for user query result set text (sum of cell text
 /// UTF-8 bytes).
 ///
 /// Only `execute` (user queries) is bounded; metadata tooling
-/// (`execute_metadata`) output is determined by fixed server-side SQL
-/// with a bounded size and is not limited.
 pub(crate) const RESULT_BYTE_LIMIT: usize = 10 * 1024 * 1024;
-
 /// Test helper: read the test database config from environment variables
 /// (defaults to localhost:15432).
 #[cfg(test)]
@@ -168,7 +155,6 @@ pub(crate) async fn connection_available(pool: &PgPool) -> bool {
 }
 
 /// Test helper: probe whether a connection is usable (sync, for sync
-/// tests).
 #[cfg(test)]
 pub(crate) fn connection_available_sync(pool: &PgPool) -> bool {
     tokio::runtime::Builder::new_current_thread()

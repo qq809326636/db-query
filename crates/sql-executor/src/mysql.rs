@@ -1,4 +1,3 @@
-//! MySQL implementation: connection pool (`MyPool`), query execution
 //! (`MyExecutor`) and health check (`MyHealthCheck`).
 //!
 //! Built on mysql_async (per-database native drivers, per the overall design
@@ -20,10 +19,8 @@ use excapp_db_core::config::DatabaseConfig;
 use std::time::Duration;
 
 /// mysql implementation-layer errors: structured English, carrying the database
-/// id (uid), never credentials.
 #[derive(Debug, thiserror::Error)]
 pub enum MyError {
-    /// extra_opts failed to parse (not `key=value` pairs, a key outside the
     /// whitelist, or an invalid value).
     #[error(
         "invalid extra_opts for database '{db_name}': expected space-separated key=value pairs with keys from {supported}, got '{raw}'"
@@ -37,7 +34,6 @@ pub enum MyError {
         raw: String,
     },
     /// Failed to get a connection from the pool (including connect failures:
-    /// refused / auth failed / timeout, etc.).
     #[error("mysql connection failed for database '{db_name}': {detail}")]
     Connection {
         /// Database unique id (uid, error identifier).
@@ -45,7 +41,6 @@ pub enum MyError {
         /// Raw driver error (preserving refused / auth-failure semantics).
         detail: String,
     },
-    /// Query execution failed (passing through MySQL's raw semantics, e.g. table
     /// does not exist).
     #[error("query failed for database '{db_name}': {detail}")]
     Query {
@@ -66,7 +61,6 @@ pub enum MyError {
         /// The limit (100).
         limit: usize,
     },
-    /// Result-set text byte total exceeds the limit (user queries only; no
     /// partial results returned).
     #[error(
         "query result exceeds byte limit for database '{db_name}': got {actual} bytes, limit is {limit}"
@@ -105,7 +99,6 @@ pub(crate) const RESULT_BYTE_LIMIT: usize = 10 * 1024 * 1024;
 pub(crate) const EXTRA_OPTS_KEYS: &str = "[ssl-mode, charset]";
 
 /// Test helper: read the test database config from environment variables
-/// (defaulting to localhost:13306).
 #[cfg(test)]
 pub(crate) fn test_config() -> DatabaseConfig {
     DatabaseConfig {

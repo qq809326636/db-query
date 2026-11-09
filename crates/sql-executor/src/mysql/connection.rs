@@ -42,7 +42,7 @@ impl MyPool {
     /// `ssl-mode` goes into connect options, `charset` into the session prefix
     /// (`SET NAMES`); other shapes or keys outside the whitelist return
     /// [`MyError::InvalidExtraOpts`].
-    /// （fail closed）。
+    /// (fail closed).
     pub fn new(config: &DatabaseConfig) -> Result<Self, MyError> {
         let parsed = parse_extra_opts(&config.extra_opts, &config.uid)?;
         let pool = build_pool(
