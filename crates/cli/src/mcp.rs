@@ -78,7 +78,7 @@ fn start(transport: Transport, config: &std::path::Path, pidfile: Option<PathBuf
         Some(PidGuard { path: pid_path })
     } else {
         None // stdio mode writes no pid (the local client manages the
-             // process).
+        // process).
     };
 
     let code = match transport {
